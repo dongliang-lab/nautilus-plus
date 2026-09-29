@@ -19,6 +19,36 @@
 - **隐藏归档(2026-08-22)**:空白处右键「隐藏归档/显示归档」(仅 fork 显示);C 层新增 `NautilusArchivedFilter` 与 slot 过滤器组合接入视图模型,归档文件夹从图标/列表/搜索/树形模式完全消失(组头随条目消失);Python 开关 ↔ C 过滤器状态走 gsettings fork-only 键 `org.gnome.nautilus.preferences.hide-archived`(默认显示)。设计见 `design/hide-archived.md`
 - **隐藏归档汇总卡片(2026-08-26)**:开启隐藏归档且有归档条目时,视图末尾出现独立汇总卡片(网格占一格/列表占一行):分组名「已归档」+ 数量 + 至多 3 条名称(中文名优先);点击临时显示被隐藏条目(不动持久化设置),导航到其他目录自动恢复隐藏。实现为独立卡片对象 `NautilusHiddenGroupCard` 挂 auxiliary `NautilusViewItem` 走 `GtkFlattenListModel` 尾部拼接,不伪造文件、不可选中、不进文件排序/过滤管线;选中转发器排除尾部位置。设计见 `design/hidden-group-card.md`;**修复(2026-08-26)**:扩展属性异步就绪晚于 items 进模型,初始加载/重进路径时归档先放行且无人重评估——`files_view_file_changed`/`end_file_changes` 现在以 idle 合并触发 `gtk_filter_changed(DIFFERENT)` 全量重评(卡片与过滤同源刷新);且 `match` 对「目录 + 属性检索中」的条目保守隐藏(`nautilus_file_is_extension_info_pending`),归档文件夹不再闪现一帧,非归档在属性就绪后正常回归;**再修复(2026-08-26)**:保守隐藏令「纯文件夹目录」在属性就绪前显示为空,重评估放行后条目数变化在 `end_file_changes` 之外——refilter idle 同步刷新空状态页与工具栏,修复打开 `/home/dongliang/projects` 等全文件夹目录显示「Folder is Empty」;**排序/首屏优化(2026-08-26)**:ready 判定补上 `REQUEST_EXTENSION_INFO`,隐藏归档首次加载等待完整文件列表和扩展属性后再安装 monitor/渲染,避免未知分组先显示再重排;共享分组比较器将「已归档」固定置底,普通组以及组内原有名称/日期/大小排序保持不变;**修复(2026-08-26)**:全局切换「显示归档/隐藏归档」时清除卡片点击产生的临时显示状态并即时刷新当前文件夹,避免切回隐藏后仍保留归档条目
 
+## 0.3.9 — 2026-09-29
+
+**新增 skill:`folder-yaml`**
+
+- `plus/skills/folder-yaml/SKILL.md`:把 `.folder.yaml` 的格式与四类操作(给文件夹加描述、给文件加注释、归档文件夹、迁移/改名文件夹)写成一份**面向操作**的技能包,含不变量与"不要做"清单;原理仍留在 `design/` 各文档里
+- 目的:让操作文件夹的 agent 有权威依据,而不是从用户私有的 `~/.agents/AGENTS.md` 或开发者向的设计文档里拼凑
+- `AGENTS.md` 增加「操作 `.folder.yaml` 之前(必做)」指针;用户级 `~/.agents/AGENTS.md` 的对应长节同步瘦身为指针
+- 可安装:`npx skills add dongliang/nautilus-plus --skill folder-yaml -g`(符合 `vercel-labs/skills` 规范:目录含 `SKILL.md`,frontmatter 有 `name` + `description`)
+- `plus/dev/deploy.sh` 修正:先以当前用户身份 `ninja -C build` 构建完再 `pkexec` 安装 —— 此前整个 ninja 以 root 运行,会在 `build/` 留下 root 属主产物,导致你之后的构建写不动(见 pitfalls #19)
+
+## 0.3.8 — 2026-09-27
+
+**修复:`meson test` 清空开发者书签的根因**
+
+- **根因**:`test-bookmarks.c` 构造真实的 `NautilusBookmarkList` 并 add 书签,而它保存到 `$XDG_CONFIG_HOME/gtk-3.0/bookmarks` —— 测试进程没隔离配置目录,每跑一次测试就把开发者的真实书签覆盖成它自己的(跑完为空)列表。开发流程每轮都跑 `meson test`,所以表现为"每开发一个功能书签就清空"
+- **验证**:只跑 `meson test -C build test-bookmarks`,书签从 41 字节变 0;修复后跑完整套件(21/21)字节数不变
+- **修复**:`test/meson.build` 的 `test_env` 增加 `XDG_CONFIG_HOME=<构建根目录>`,测试的用户级配置一律落在构建目录内
+- `pitfalls.md` #18 记录排查过程(此前误判为安装/启动导致)
+
+## 0.3.7 — 2026-09-27
+
+**自动记录 `history-paths`(C 提供移动事件,Python 写规则)**
+
+- 新增 C 层**通用能力**:`src/nautilus-plus-events.{c,h}` 在 `nautilus_directory_notify_files_moved()` 里,把每一对 (from, to) 通过 D-Bus 信号 `Moved(from_uri, to_uri)` 广播出去(总线名 `org.gnome.NautilusPlus`)。**C 不含任何业务语义**
+- Python 层订阅该信号并实现规则:目标端是本地目录、且不含该路径时,把**旧路径**追加进 `.folder.yaml` 的 `history-paths`(没有 yaml 则创建,字段缺失则新建);重复路径不追加
+- 用途:文件夹移动后,靠这些旧路径找回并改写各 coding agent 会话记录里的路径,让会话跟着文件夹迁移
+- 覆盖范围:GUI 改名/拖动/剪切粘贴 ✅;nautilus-plus 正显示的目录内的终端移动 ✅;跨目录且两端不在同一被监视目录 ❌(由 agent 规则兜底);创建文件夹不受影响
+- **分层原则的表述随之更正**(`AGENTS.md` 决策 3/5、`plus/README.md`、`research.md`、`grouped-view.md`):C 只提供**通用能力**,业务规则永远在 Python —— 而不是"C 只做某个功能"
+- Python 单测 70 → 84;设计见 `design/history-paths.md`
+
 ## 0.3.6 — 2026-09-26
 
 **部署期给书签加一层临时保险**

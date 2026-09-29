@@ -65,7 +65,7 @@
 
 ## 架构决策
 
-- **分层**:C 钩子(能力)+ Python 扩展(规则)。判断标准:变化频率——规则/UX 常变留 Python(秒级迭代),能力少变留 C
+- **分层**:**C 只提供通用能力(不写业务),业务规则全部在 Python 扩展**。判断标准:这项改动是"Python 够不到的能力"还是"业务规则"?前者才考虑 C,且必须做成通用能力(顺带:改动频率低的能力也更适合 C)
 - **钩子抽象**:钩子只认"扩展属性 = 值",不认写属性者——为将来 C 原生读 `.folder.yaml` 留迁移路径(规则稳定后,把读 yaml 搬进 C,Python 层收缩或消失)
 - **`.folder.yaml` 定位**:文件夹内 dotfile——随文件夹移动而存活(mv/cp/rsync 携带)、工具无关(Windows 的 `desktop.ini` 同架构,已存活 30 年)
 - **打包**:PKGBUILD 把扩展装到 `/usr/share/nautilus-python/extensions/`,`depends=(nautilus-python python-yaml)`,与 fork 版本锁步;装包前删用户目录旧副本防双菜单;开发用 `~/.local` 副本快速迭代

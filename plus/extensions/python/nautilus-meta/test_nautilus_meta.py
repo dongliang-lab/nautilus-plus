@@ -700,6 +700,16 @@ class ApplyAnnotationTests(unittest.TestCase):
         )
 
 
+class _SignalParams:
+    """Stands in for the GVariant a D-Bus signal handler receives."""
+
+    def __init__(self, from_uri, to_uri):
+        self._uris = (from_uri, to_uri)
+
+    def unpack(self):
+        return self._uris
+
+
 class _Entry:
     def __init__(self, text):
         self._text = text
@@ -838,6 +848,98 @@ class AnnotationTokenTests(unittest.TestCase):
         self.assertTrue(window.closed)
         self.assertIsNone(nautilus_meta._read_token(path))
         self.assertNotIn('notes.txt', self.yaml_text(self.here.name))
+
+
+class HistoryPathTests(unittest.TestCase):
+    """.folder.yaml remembers where a folder used to live."""
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.path = Path(self.folder.name) / nautilus_meta.YAML_NAME
+        self.addCleanup(self.folder.cleanup)
+        nautilus_meta._yaml_cache.clear()
+        self.addCleanup(nautilus_meta._yaml_cache.clear)
+
+    def read(self):
+        return self.path.read_text(encoding='utf-8') if self.path.exists() else ''
+
+    def test_creates_the_field(self):
+        self.assertEqual(
+            nautilus_meta._append_history_entry('desc: x\n', '/old/place'),
+            'desc: x\nhistory-paths:\n  - /old/place\n')
+
+    def test_appends_to_a_block_sequence(self):
+        self.assertEqual(
+            nautilus_meta._append_history_entry('history-paths:\n  - /one\n',
+                                                '/two'),
+            'history-paths:\n  - /one\n  - /two\n')
+
+    def test_appends_to_a_flow_sequence(self):
+        self.assertEqual(
+            nautilus_meta._append_history_entry('history-paths: [/one]\n',
+                                                '/two'),
+            'history-paths: [/one, /two]\n')
+
+    def test_fills_an_empty_flow_sequence(self):
+        self.assertEqual(
+            nautilus_meta._append_history_entry('history-paths: []\n', '/one'),
+            'history-paths: [/one]\n')
+
+    def test_fills_a_bare_key(self):
+        self.assertEqual(
+            nautilus_meta._append_history_entry('history-paths:\n', '/one'),
+            'history-paths:\n  - /one\n')
+
+    def test_quotes_awkward_paths(self):
+        """A path can be plain after `key: ` yet need quotes as a `- ` item."""
+        scalar = nautilus_meta._yaml_sequence_scalar('/a: b')
+        self.assertEqual(scalar, "'/a: b'")
+        self.assertEqual(nautilus_meta._append_history_entry('', scalar),
+                         "history-paths:\n  - '/a: b'\n")
+
+    def test_awkward_path_survives_a_move_record(self):
+        nautilus_meta._record_move('/old/a: b', self.folder.name)
+        self.assertEqual(nautilus_meta._yaml_history(self.folder.name),
+                         ['/old/a: b'])
+
+    def test_keeps_other_fields_and_comments(self):
+        out = nautilus_meta._append_history_entry(
+            '# 标题\ndesc: x  # 保留\narchived: true\n', '/old')
+        for fragment in ('# 标题', 'desc: x  # 保留', 'archived: true', '  - /old'):
+            self.assertIn(fragment, out)
+
+    def test_recording_a_move_creates_the_yaml(self):
+        nautilus_meta._record_move('/old/place', self.folder.name)
+        self.assertEqual(self.read(), 'history-paths:\n  - /old/place\n')
+
+    def test_recording_a_move_keeps_existing_content(self):
+        self.path.write_text('desc: 项目\n', encoding='utf-8')
+        nautilus_meta._record_move('/old/place', self.folder.name)
+        self.assertEqual(self.read(),
+                         'desc: 项目\nhistory-paths:\n  - /old/place\n')
+
+    def test_the_same_path_is_not_recorded_twice(self):
+        self.path.write_text('history-paths:\n  - /old/place\n',
+                             encoding='utf-8')
+        nautilus_meta._record_move('/old/place', self.folder.name)
+        self.assertEqual(self.read(), 'history-paths:\n  - /old/place\n')
+
+    def test_moving_something_that_is_not_a_directory_is_ignored(self):
+        nautilus_meta._record_move(
+            '/old/place', os.path.join(self.folder.name, 'nope'))
+        self.assertFalse(self.path.exists())
+
+    def test_the_signal_is_turned_into_a_recorded_path(self):
+        nautilus_meta._on_move_signal(
+            None, None, None, None, None,
+            _SignalParams('file:///old/place', 'file://' + self.folder.name))
+        self.assertIn('/old/place', self.read())
+
+    def test_remote_uris_are_ignored(self):
+        nautilus_meta._on_move_signal(
+            None, None, None, None, None,
+            _SignalParams('sftp://host/x', 'file://' + self.folder.name))
+        self.assertFalse(self.path.exists())
 
 
 if __name__ == '__main__':

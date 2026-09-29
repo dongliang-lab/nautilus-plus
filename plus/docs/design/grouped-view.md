@@ -4,7 +4,7 @@
 
 ## 背景
 
-fork 的唯一动机是**分组视图**(`research.md` 第 2 节蓝图)。nautilus-python 扩展 API 没有任何能影响视图模型/排序/分组的扩展点(只有 Column/Info/Menu/PropertiesModel 四类 provider),GtkGridView 也没有 header factory——因此分组能力必须由 fork 提供 C 钩子。
+分组能力是 fork 提供的第一项 C 层通用能力(`research.md` 第 2 节蓝图;分层原则见 `AGENTS.md` 决策 5)。nautilus-python 扩展 API 没有任何能影响视图模型/排序/分组的扩展点(只有 Column/Info/Menu/PropertiesModel 四类 provider),GtkGridView 也没有 header factory——Python 够不到,因此必须由 fork 在 C 层提供。
 
 本次范围(用户已定):**图标 + 列表两视图**都支持分组;不做折叠交互;图标视图在**每个分组项的图标中央**显示分组名徽章(列表视图保留整行组头);Python 层用 `archived: true` 作为 `已归档` 分组做端到端测试。**未分组条目正常显示在最前,不渲染任何"未分组"组头**。
 

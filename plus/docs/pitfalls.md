@@ -124,3 +124,23 @@
   - 目录 mtime 与文件 mtime 相同 → 那次是**原子替换式写入**,即某个实例保存了一次列表,而它内存里的列表是空的或只剩一条(同时开着系统 nautilus 与本 fork 时,列表过时的那方一保存就会覆盖)
 - **处理**:`plus/dev/deploy.sh` 在安装前把书签临时复制一份,安装后条目数变少就还原,用完即清 —— 不留历史目录、不留常驻单元。只比较**条目数**,所以单纯的改名/换标签不会误触发还原
 - **边界**:它只覆盖"安装期间"的变化;两次安装之间发生的清空,只能靠你自己留的副本恢复
+
+## 18. `meson test` 会清空你的书签(测试写了真实用户配置)
+
+- **现象**:开发若干轮之后,侧栏里自己加的书签没了,`~/.config/gtk-3.0/bookmarks` 变成 0 字节。此前误判为"安装流程或应用启动导致"——不是
+- **根因**:`test/automated/displayless/test-bookmarks.c` 构造真实的 `NautilusBookmarkList` 并调用 `nautilus_bookmark_list_add()`;该列表保存到 `g_get_user_config_dir()/gtk-3.0/bookmarks`(即 `$XDG_CONFIG_HOME` 或 `~/.config`)。测试进程没有隔离配置目录,于是把开发者的真实书签覆盖成它自己的列表(跑完为空)
+- **为什么"每开发一个功能就发生"**:开发流程每轮都跑 `meson test`,跑一次覆盖一次
+- **确认方式**:备份书签 → 只跑 `meson test -C build test-bookmarks` → 41 字节变 0;隔离后再跑,字节数不变
+- **处理**:`test/meson.build` 的 `test_env` 加 `XDG_CONFIG_HOME=<构建根目录>`,所有测试都写进构建目录(已随 `build/` 忽略)。今后测试若需读写用户级配置,一律照此隔离 —— **测试进程绝不碰真实 `$HOME` 配置**
+- 另:`plus/dev/deploy.sh` 会在安装前临时备份书签、条目变少则还原,是安装期的第二层保险
+
+## 19. `pkexec ninja install` 以 root 编译,把 build/ 变成写不动
+
+- **现象**:`ninja -C build` 报 `Unhandled python OSError`;`meson setup --reconfigure build` 报 `FileNotFoundError: .../build/meson-private/tmpXXXX`
+- **两个独立原因**(实测同时踩到):
+  1. **root 属主产物**:`pkexec ninja -C build install` 是**整个 ninja 以 root 运行**。若此时还有过期目标,它们会被 root 重新编译,在 `build/` 里留下 root 属主的 `.o`/`.a`;之后你自己的构建无权覆盖
+  2. **项目被移动**:构建目录里烧死了配置时的绝对源路径(见报错里的旧路径)。移动项目后这个构建目录救不回来
+- **处理**:
+  - 属主:`pkexec /usr/bin/chown -R $USER:$USER /绝对路径/build` —— **pkexec 不保留工作目录,必须给绝对路径**
+  - 移动后:把旧的挪到旁边(`mv build build.stale-日期`,不删),在新位置 `meson setup build --prefix=/usr -Dprofile=Plus -Ddocs=false` 全量重建
+- **预防**:`plus/dev/deploy.sh` 已改为**先以当前用户身份 `ninja -C build` 构建完**,再只用 `pkexec` 做安装那一步 —— root 跑到 ninja 时已无活可干

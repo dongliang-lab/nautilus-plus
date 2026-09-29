@@ -112,6 +112,8 @@ libnautilus_sources = [
   'nautilus-files-view.h',
   'nautilus-archived-filter.c',
   'nautilus-archived-filter.h',
+  'nautilus-plus-events.c',
+  'nautilus-plus-events.h',
   'nautilus-hidden-group-card.c',
   'nautilus-hidden-group-card.h',
   'nautilus-floating-bar.c',

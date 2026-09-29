@@ -18,6 +18,11 @@ test_env = [
   'GSK_DEBUG=fallback',
   'GSETTINGS_BACKEND=memory',
   'GSETTINGS_SCHEMA_DIR=@0@'.format(join_paths(meson.project_build_root(), 'data')),
+  # Tests must never touch the real user configuration: test-bookmarks.c
+  # builds a NautilusBookmarkList, which saves to
+  # $XDG_CONFIG_HOME/gtk-3.0/bookmarks — left pointing at the real home, it
+  # wipes the developer's own bookmarks every time the suite runs.
+  'XDG_CONFIG_HOME=@0@'.format(meson.project_build_root()),
 ]
 
 subdir('automated')

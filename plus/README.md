@@ -17,13 +17,14 @@ plus/
 │   ├── pitfalls.md       # 踩坑记录
 │   └── CHANGELOG.md      # 版本日志
 └── extensions/
+    ├── skills/           # 给 agent 的技能包(folder-yaml:`.folder.yaml` 格式与操作)
     └── python/           # Python 扩展(业务层,nautilus-python 插件)
         └── nautilus-meta/
 ```
 
 ## 开发分工
 
-- **C 层**(本仓库主树):新能力钩子(显示名覆盖、分组机制等)——能力放 C,规则放 Python
+- **C 层**(本仓库主树):只放**通用能力**——Python 扩展够不到、或必须做成通用机制的东西(分组/排序与视图过滤、文件移动事件广播)。C 里不写业务:不解析 `.folder.yaml`、不判断功能开关
 - **Python 层**(`extensions/python/`):业务逻辑(.folder.yaml 解析、开关、菜单)——修改快速迭代,装到 `~/.local/share/nautilus-python/extensions/` 即可
 
 详见 `docs/research.md` 的架构决策章节。

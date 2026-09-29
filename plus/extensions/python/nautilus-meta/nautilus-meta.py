@@ -68,6 +68,14 @@ CAPTIONS_KEY = 'captions'
 ATTR = 'desc'
 # Per-file annotations live in a nested mapping of the same .folder.yaml.
 FILES_KEY = 'file-desc'
+# Paths this folder has been known by, for finding its old coding-agent
+# sessions after a move. Fork-only C publishes every observed move on the
+# signal below; what to do about it is decided here.
+HISTORY_KEY = 'history-paths'
+MOVE_SIGNAL_NAME = 'org.gnome.NautilusPlus'
+MOVE_SIGNAL_PATH = '/org/gnome/NautilusPlus'
+MOVE_SIGNAL_INTERFACE = 'org.gnome.NautilusPlus.FileMonitor'
+MOVE_SIGNAL_MEMBER = 'Moved'
 # File annotations also travel inside the file itself, as an extended
 # attribute, so moving or renaming a file keeps them. The yaml stays the
 # human-facing source of truth; this is only the carrier.
@@ -216,10 +224,11 @@ def _atomic_write(path, text, mode=None):
 # --- .folder.yaml --------------------------------------------------------
 
 def _parse_yaml(yaml_path):
-    """(desc, archived, file_descs) from one .folder.yaml."""
+    """(desc, archived, file_descs, history) from one .folder.yaml."""
     desc = None
     archived = False
     file_descs = {}
+    history = []
     try:
         if os.path.getsize(yaml_path) <= YAML_MAX_SIZE:
             with open(yaml_path, encoding='utf-8') as f:
@@ -238,13 +247,17 @@ def _parse_yaml(yaml_path):
                         if (isinstance(entry, str) and isinstance(annotation, str)
                                 and annotation.strip()):
                             file_descs[entry] = annotation.strip()
+                paths = data.get(HISTORY_KEY)
+                if isinstance(paths, list):
+                    history = [p for p in paths
+                               if isinstance(p, str) and p.strip()]
     except (yaml.YAMLError, UnicodeDecodeError, OSError, ValueError):
         pass
-    return (desc, archived, file_descs)
+    return (desc, archived, file_descs, history)
 
 
 def _yaml_data(folder_path):
-    """(desc, archived, file_descs) parsed from the folder's .folder.yaml.
+    """(desc, archived, file_descs, history) from the folder's .folder.yaml.
 
     Cached by the yaml's and the folder's mtime: this runs for every file
     in the folder, so it is parsed once per change, not once per item.
@@ -256,7 +269,7 @@ def _yaml_data(folder_path):
         yaml_mtime = os.path.getmtime(yaml_path)
     except OSError:
         _yaml_cache.pop(folder_path, None)
-        return (None, False, {})
+        return (None, False, {}, [])
     try:
         # A file appearing or disappearing is what makes an entry stale,
         # and that is exactly what the directory mtime records.
@@ -293,13 +306,84 @@ def _yaml_data(folder_path):
 
 def _yaml_info(folder_path):
     """(desc, archived) from the folder's .folder.yaml. Cached by mtime."""
-    desc, archived, _file_descs = _yaml_data(folder_path)
+    desc, archived, _file_descs, _history = _yaml_data(folder_path)
     return (desc, archived)
 
 
 def _yaml_file_descs(folder_path):
     """{file name: annotation} from the folder's .folder.yaml, cached."""
     return _yaml_data(folder_path)[2]
+
+
+def _yaml_history(folder_path):
+    """Paths this folder has been known by, oldest first."""
+    return _yaml_data(folder_path)[3]
+
+
+def _append_history_path(folder_path, old_path):
+    """Record `old_path` in history-paths, creating the field or file."""
+    scalar = _yaml_sequence_scalar(old_path)
+
+    def update(text):
+        result = _append_history_entry(text, scalar)
+        # Safety net: never leave a file behind that no longer reads back.
+        try:
+            data = yaml.safe_load(result)
+        except yaml.YAMLError as error:
+            raise ValueError('路径无法写入 YAML') from error
+        if (not isinstance(data, dict)
+                or old_path not in (data.get(HISTORY_KEY) or [])):
+            raise ValueError('路径无法写入 YAML')
+        return result
+
+    _update_yaml_file(folder_path, update)
+    _yaml_cache.pop(folder_path, None)
+
+
+def _record_move(from_path, to_path):
+    """Remember where a folder came from.
+
+    The old path is what finds that folder's coding-agent sessions, so it
+    is appended (never the current path); a path already listed is skipped.
+    """
+    if not os.path.isdir(to_path):
+        return
+    if from_path in _yaml_history(to_path):
+        return
+    try:
+        _append_history_path(to_path, from_path)
+    except (ValueError, OSError):
+        traceback.print_exc()
+
+
+def _on_move_signal(_connection, _sender, _path, _interface, _signal,
+                    parameters):
+    from_uri, to_uri = parameters.unpack()
+    from_path = _uri_to_local_path(from_uri)
+    to_path = _uri_to_local_path(to_uri)
+    if from_path is None or to_path is None:
+        return
+    _record_move(from_path, to_path)
+
+
+def _subscribe_move_signal():
+    """Listen for the file moves the fork's C layer publishes.
+
+    C reports only the fact (this was moved from there to here); every
+    business rule about it lives on this side. See
+    plus/docs/design/history-paths.md.
+    """
+    try:
+        connection = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        connection.signal_subscribe(MOVE_SIGNAL_NAME, MOVE_SIGNAL_INTERFACE,
+                                    MOVE_SIGNAL_MEMBER, MOVE_SIGNAL_PATH,
+                                    None, Gio.DBusSignalFlags.NONE,
+                                    _on_move_signal)
+    except Exception:
+        # No session bus, or the stubs used by the tests: history simply
+        # is not recorded automatically.
+        return None
+    return connection
 
 
 def _yaml_scalar(value):
@@ -538,6 +622,88 @@ def _token_matches(token, folder, name, value):
             and token.get('folder') == folder
             and token.get('name') == name
             and token.get('desc') == value)
+
+
+def _sequence_indent(text, sequence_node):
+    """Leading whitespace of the line a block sequence's first item is on."""
+    first = sequence_node.value[0]
+    line_start = text.rfind('\n', 0, first.start_mark.index) + 1
+    prefix = text[line_start:first.start_mark.index]
+    return prefix[:len(prefix) - len(prefix.lstrip())]
+
+
+def _append_to_sequence(text, sequence_node, scalar):
+    """Text with one more scalar appended to the sequence `sequence_node`."""
+    newline = '\r\n' if '\r\n' in text else '\n'
+
+    if sequence_node.flow_style:
+        close = text.rfind(']', sequence_node.start_mark.index,
+                           sequence_node.end_mark.index)
+        if close < 0:
+            raise ValueError('.folder.yaml 中无法定位列表')
+        prefix = text[:close].rstrip()
+        if prefix.endswith(','):
+            separator = ' '
+        elif sequence_node.value:
+            separator = ', '
+        else:
+            separator = ''
+        return text[:close] + f'{separator}{scalar}' + text[close:]
+
+    entry = f'{_sequence_indent (text, sequence_node)}- {scalar}{newline}'
+    return _insert_block_entry (text, sequence_node, entry, False)
+
+
+def _yaml_sequence_scalar(value):
+    """`value` serialized as a YAML sequence item, quoted as needed.
+
+    A value can be plain after `key: ` and still need quoting as a `- `
+    item, so dump a one-element sequence and take what is inside the
+    brackets — the same trick _yaml_pair uses for mapping entries.
+    """
+    if not value:
+        raise ValueError('路径不能为空')
+    if '\n' in value or '\r' in value:
+        raise ValueError('路径不能包含换行')
+    dumped = yaml.safe_dump([value], default_flow_style=True,
+                            allow_unicode=True, width=10 ** 9).strip()
+    if not (dumped.startswith('[') and dumped.endswith(']')):
+        raise ValueError('路径无法写入 YAML')
+    scalar = dumped[1:-1]
+    if yaml.safe_load('[' + scalar + ']') != [value]:
+        raise ValueError('路径无法写入 YAML')
+    return scalar
+
+
+def _append_history_entry(text, scalar):
+    """Text with one more entry in the top-level history-paths sequence."""
+    newline = '\r\n' if '\r\n' in text else '\n'
+
+    if not text:
+        return f'{HISTORY_KEY}:{newline}  - {scalar}{newline}'
+
+    node = _compose_mapping(text)
+    matches = _find_key_nodes (node, HISTORY_KEY)
+    if len(matches) > 1:
+        raise ValueError(f'.folder.yaml 中存在重复的 {HISTORY_KEY}')
+
+    if not matches:
+        if node.flow_style:
+            entry = f'{HISTORY_KEY}: [{scalar}]'
+        else:
+            entry = f'{HISTORY_KEY}:{newline}  - {scalar}'
+        return _put_in_mapping (text, node, HISTORY_KEY, scalar,
+                                entry_body=entry, before_document_end=True)
+
+    value_node = matches[0][1]
+    if isinstance (value_node, yaml.SequenceNode):
+        return _append_to_sequence (text, value_node, scalar)
+
+    # A bare `history-paths:` parses as a null scalar: turn it into a
+    # one-entry block sequence.
+    start = value_node.start_mark.index
+    end = value_node.end_mark.index
+    return text[:start] + f'{newline}  - {scalar}' + text[end:]
 
 
 def _yaml_pair(name, value):
@@ -820,6 +986,16 @@ def _sync_captions(enabled):
 def _local_path(file):
     """Local filesystem path of `file`, or None when it has none."""
     uri = file.get_uri()
+    if not uri.startswith('file:'):
+        return None
+    try:
+        return GLib.filename_from_uri(uri)[0]
+    except GLib.Error:
+        return None
+
+
+def _uri_to_local_path(uri):
+    """Local path for a file:// URI, or None."""
     if not uri.startswith('file:'):
         return None
     try:
@@ -1263,3 +1439,6 @@ class FolderMetaMenu(GObject.GObject, Nautilus.MenuProvider):
 
 # Keep the icon-view captions in sync from the start (switch defaults to on).
 _sync_captions(_enabled())
+
+# Holds the bus connection so the move subscription stays alive.
+_move_subscription = _subscribe_move_signal()

@@ -41,6 +41,10 @@ else
     echo "书签文件不存在,跳过备份"
 fi
 
+# 先以当前用户身份构建完。否则 ninja 会以 root 编译,在 build/ 里留下
+# root 属主的产物,之后你自己的构建就写不动了(实测踩到过)。
+ninja -C "$BUILD_DIR"
+
 if [ -n "${INSTALL_CMD:-}" ]; then
     eval "$INSTALL_CMD"
 else

@@ -29,6 +29,7 @@
 #include "nautilus-enums.h"
 #include "nautilus-file-private.h"
 #include "nautilus-file-utilities.h"
+#include "nautilus-plus-events.h"
 #include "nautilus-global-preferences.h"
 #include "nautilus-hash-queue.h"
 #include "nautilus-metadata.h"
@@ -1346,6 +1347,11 @@ nautilus_directory_notify_files_moved (GList *file_pairs)
         GFile *from_location = pair->from;
         GFile *to_location = pair->to;
         g_autoptr (NautilusFile) from_file = nautilus_file_get_existing (from_location);
+
+        /* Fork-only: publish the move for the extension layer. Business
+         * rules (what to do about it) live in the Python extension. */
+        nautilus_plus_events_emit_file_moved (from_location, to_location);
+
         g_autoptr (NautilusFile) to_file = nautilus_file_get_existing (to_location);
 
         /* Handle overwriting a file. */
