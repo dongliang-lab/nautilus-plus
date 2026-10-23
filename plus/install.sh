@@ -6,7 +6,7 @@
 # 系统里残留的旧副本会被提示删除(需要 pkexec,不自动执行)。
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC="$REPO_ROOT/plus/extensions/python/nautilus-meta/nautilus-meta.py"
 USER_DIR="$HOME/.local/share/nautilus-python/extensions"
 SYSTEM_COPY="/usr/share/nautilus-python/extensions/nautilus-meta.py"
