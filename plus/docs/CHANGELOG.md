@@ -1,5 +1,18 @@
 # 版本日志
 
+## 0.4.0 — 2026-10-23
+
+**删除归档与 history-paths,C 层全部还原为上游原样(纯插件)**
+
+- 删除功能:分组视图、归档切换、隐藏归档、隐藏汇总卡片、history-paths 自动记录
+- 删除 C 改动:全部 `src/`、`data/`、`meson.build`、`test/meson.build` 还原到上游基底 `3671384a2`;fork 新增的 8 个 C 文件删除
+- 删除 fork 构建:`plus/meson.build`、`plus/gschema/`、`plus/desktop/`、`plus/icons/`、`plus/dev/deploy.sh`
+- 新增 `plus/install.sh`:复制插件到 `~/.local/share/nautilus-python/extensions/` 并重启 nautilus,不需要构建和 pkexec
+- 列表视图描述改由 `Nautilus.ColumnProvider` 提供「描述」列(右键列头勾选),不再需要 name-cell 的 C 改动
+- `.folder.yaml` 现在只有 `desc`、`file-desc` 两个键;残留的 `archived`/`history-paths` 不读不写、原样保留
+- Python 单测 84 → 51(删除归档/history/plus-schema 用例,新增 ColumnProvider 用例)
+- 文档同步:删除 6 篇设计文档,重写 AGENTS.md、plus/README.md、research.md、pitfalls.md、requirements.md、folder-yaml skill
+
 ## 0.3.0 — 2026-08-19
 
 **fork 独立身份(nautilus-plus)✅ 已实现**,设计见 `design/plus-identity.md`

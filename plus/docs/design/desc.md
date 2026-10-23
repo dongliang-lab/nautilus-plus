@@ -39,7 +39,7 @@ MenuProvider.get_background_items(右键空白处)
 ## 已知边界
 
 - 图标最小缩放档只显示名字一行,captions 隐藏(nautilus 自身行为)
-- 列表视图不受影响(只作用于图标视图 captions)
+- 列表视图通过 ColumnProvider 单独提供「描述」列(见下)
 - 非 `file:` URI(网络挂载)跳过
 
 ## 右键修改描述
@@ -63,7 +63,7 @@ MenuProvider.get_background_items(右键空白处)
 - `.folder.yaml` 不存在时创建包含顶层 `desc` 的 UTF-8 文件
 - 已存在文件先用 PyYAML 校验;根节点必须是 mapping,解析失败或文件超过大小限制时拒绝覆盖
 - 通过 YAML 节点位置只替换顶层 `desc` 的值;缺少该键时在文档末尾添加
-- 保留 `archived` 等其他字段、键顺序、注释、空行和原有格式
+- 保留其他字段、键顺序、注释、空行和原有格式
 - 输入限定为单行文本;序列化值必须能被 PyYAML 再次解析为原输入
 - 使用同目录临时文件和 `os.replace` 原子替换,写入失败时原文件不变
 
