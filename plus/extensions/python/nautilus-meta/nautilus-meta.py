@@ -8,28 +8,9 @@ icon view. The real folder name (and path) is never changed, and normal
 renaming (F2) is unaffected — edit `.folder.yaml` to change the
 description.
 
-The extension also drives the fork's grouped view: a folder whose
-`.folder.yaml` has `archived: true` (strictly the YAML boolean true) gets
-the `group` extension attribute "已归档", which the fork's C sorters use to
-partition the view — archived folders form a trailing "已归档" group with a
-header, ungrouped items stay in front without one. Grouping is independent
-of the switch below (it only controls the description captions).
-
-Folders can be archived and unarchived from the selection context menu
-(multi-select supported): the action writes or removes `archived: true`
-in each folder's `.folder.yaml`, reusing the same comment-preserving
-local update as the description editor.
-
-Archived folders can be hidden entirely (background context menu):
-the fork's C layer filters out items carrying the archived group key,
-so they vanish from icon view, list view (headers included) and search
-results, as if they did not exist. The switch state lives in the fork's own
-gsettings schema (org.gnome.NautilusPlus.preferences, default off = show),
-which the C filter reads directly; it is deliberately not stored in
-org.gnome.nautilus.preferences, whose file is owned by the distribution's
-nautilus package and would be overwritten on upgrade. The hide menu item
-only appears when running as the fork (nautilus-plus): the stock nautilus
-has no filter hook, so the toggle would do nothing there.
+The extension also registers a "描述" column (Nautilus.ColumnProvider), so
+list view can show the same description next to the name. It is a stock
+nautilus extension: no C changes, no fork build.
 
 A global on/off switch lives in the background context menu (right-click
 empty space in a folder). Toggling takes effect immediately, and the menu
@@ -45,7 +26,6 @@ import json
 import os
 import re
 import stat
-import sys
 import tempfile
 import traceback
 
@@ -58,24 +38,10 @@ STATE_FILE = os.path.join(CONFIG_DIR, 'state')
 CAPTIONS_BACKUP = os.path.join(CONFIG_DIR, 'captions-backup.json')
 
 ICON_VIEW_SCHEMA = 'org.gnome.nautilus.icon-view'
-# Fork-only settings live in the fork's own schema, never in
-# org.gnome.nautilus.preferences: that schema is owned by the distribution's
-# nautilus package, so a system upgrade replaces the file and drops fork-only
-# keys -- and reading a missing key aborts the process. See plus/docs/pitfalls.md.
-PLUS_SCHEMA = 'org.gnome.NautilusPlus.preferences'
-HIDE_ARCHIVED_KEY = 'hide-archived'
 CAPTIONS_KEY = 'captions'
 ATTR = 'desc'
 # Per-file annotations live in a nested mapping of the same .folder.yaml.
 FILES_KEY = 'file-desc'
-# Paths this folder has been known by, for finding its old coding-agent
-# sessions after a move. Fork-only C publishes every observed move on the
-# signal below; what to do about it is decided here.
-HISTORY_KEY = 'history-paths'
-MOVE_SIGNAL_NAME = 'org.gnome.NautilusPlus'
-MOVE_SIGNAL_PATH = '/org/gnome/NautilusPlus'
-MOVE_SIGNAL_INTERFACE = 'org.gnome.NautilusPlus.FileMonitor'
-MOVE_SIGNAL_MEMBER = 'Moved'
 # File annotations also travel inside the file itself, as an extended
 # attribute, so moving or renaming a file keeps them. The yaml stays the
 # human-facing source of truth; this is only the carrier.
@@ -84,49 +50,16 @@ XATTR_KEY = 'user.nautilus-plus.desc'
 # older build still carry it and are carried over on sight (see
 # _normalize_captions).
 LEGACY_ATTRS = ('name-zh',)
-GROUP_ATTR = 'group'
-ARCHIVED_KEY = 'archived'
-ARCHIVED_LABEL = '已归档'
 YAML_NAME = '.folder.yaml'
 YAML_MAX_SIZE = 1024 * 1024
 
 _settings = Gio.Settings.new(ICON_VIEW_SCHEMA)
 
-
-def _open_plus_settings():
-    """The fork's settings object, or None when its schema is not installed.
-
-    Must never raise: this module is also loaded by the stock nautilus, where
-    a failed import would take the whole extension down with it. Without the
-    schema the hide-archived feature simply stays unavailable.
-    """
-    try:
-        source = Gio.SettingsSchemaSource.get_default()
-        schema = source.lookup(PLUS_SCHEMA, True) if source is not None else None
-        if schema is None or not schema.has_key(HIDE_ARCHIVED_KEY):
-            print(f'nautilus-meta: schema {PLUS_SCHEMA!r} is missing; '
-                  'hide-archived stays disabled until nautilus-plus is '
-                  'installed again.', file=sys.stderr)
-            return None
-        # new_full() takes the already-validated schema: a plain
-        # Settings.new() would abort the process (g_error, not a
-        # catchable exception) if the lookup ever came up empty.
-        return Gio.Settings.new_full(schema, None, None)
-    except Exception:
-        traceback.print_exc()
-        return None
-
-
-_plus_settings = _open_plus_settings()
-
-# folder_path -> (mtime, desc | None, archived: bool, {name: annotation})
+# folder_path -> (mtime, desc | None, {name: annotation})
 _yaml_cache = {}
 # items (folder or file) we ever showed a description for; the source of
 # truth for clearing stale captions (yaml deleted / key removed / switch off)
 _shown = set()
-# folders we ever marked as grouped (archived); the source of truth for
-# clearing the group attribute when it no longer applies
-_grouped = set()
 # (mtime, unused, raw text) — the state file is now multi-line key=value
 _state_cache = (None, None, '')
 
@@ -179,24 +112,6 @@ def _set_enabled(on):
     _write_state('\n'.join(lines) + '\n')
 
 
-def _hide_archived():
-    """Whether archived folders are hidden. Defaults to off (= show).
-
-    The state lives in the fork's gsettings schema: the C filter reads the
-    same key, so every window follows instantly. Without the schema (fork not
-    installed) this degrades to "show" instead of raising.
-    """
-    if _plus_settings is None:
-        return False
-    return _plus_settings.get_boolean(HIDE_ARCHIVED_KEY)
-
-
-def _set_hide_archived(hide):
-    if _plus_settings is None:
-        return
-    _plus_settings.set_boolean(HIDE_ARCHIVED_KEY, hide)
-
-
 def _atomic_write(path, text, mode=None):
     parent = os.path.dirname(path) or '.'
     fd, tmp = tempfile.mkstemp(prefix='.' + os.path.basename(path) + '.',
@@ -224,11 +139,9 @@ def _atomic_write(path, text, mode=None):
 # --- .folder.yaml --------------------------------------------------------
 
 def _parse_yaml(yaml_path):
-    """(desc, archived, file_descs, history) from one .folder.yaml."""
+    """(desc, file_descs) from one .folder.yaml."""
     desc = None
-    archived = False
     file_descs = {}
-    history = []
     try:
         if os.path.getsize(yaml_path) <= YAML_MAX_SIZE:
             with open(yaml_path, encoding='utf-8') as f:
@@ -237,27 +150,19 @@ def _parse_yaml(yaml_path):
                 value = data.get(ATTR)
                 if isinstance(value, str) and value.strip():
                     desc = value.strip()
-                # Strict: only the YAML boolean true marks a folder archived.
-                # (PyYAML is YAML 1.1, so yes/on also parse as True — the
-                # .folder.yaml convention is to write true/false only.)
-                archived = data.get('archived') is True
                 per_file = data.get(FILES_KEY)
                 if isinstance(per_file, dict):
                     for entry, annotation in per_file.items():
                         if (isinstance(entry, str) and isinstance(annotation, str)
                                 and annotation.strip()):
                             file_descs[entry] = annotation.strip()
-                paths = data.get(HISTORY_KEY)
-                if isinstance(paths, list):
-                    history = [p for p in paths
-                               if isinstance(p, str) and p.strip()]
     except (yaml.YAMLError, UnicodeDecodeError, OSError, ValueError):
         pass
-    return (desc, archived, file_descs, history)
+    return (desc, file_descs)
 
 
 def _yaml_data(folder_path):
-    """(desc, archived, file_descs, history) from the folder's .folder.yaml.
+    """(desc, file_descs) from the folder's .folder.yaml.
 
     Cached by the yaml's and the folder's mtime: this runs for every file
     in the folder, so it is parsed once per change, not once per item.
@@ -269,7 +174,7 @@ def _yaml_data(folder_path):
         yaml_mtime = os.path.getmtime(yaml_path)
     except OSError:
         _yaml_cache.pop(folder_path, None)
-        return (None, False, {}, [])
+        return (None, {})
     try:
         # A file appearing or disappearing is what makes an entry stale,
         # and that is exactly what the directory mtime records.
@@ -283,7 +188,7 @@ def _yaml_data(folder_path):
         return hit[1]
 
     data = _parse_yaml(yaml_path)
-    stale = [entry for entry in data[2]
+    stale = [entry for entry in data[1]
              if not os.path.lexists(os.path.join(folder_path, entry))]
     if stale:
         try:
@@ -305,85 +210,13 @@ def _yaml_data(folder_path):
 
 
 def _yaml_info(folder_path):
-    """(desc, archived) from the folder's .folder.yaml. Cached by mtime."""
-    desc, archived, _file_descs, _history = _yaml_data(folder_path)
-    return (desc, archived)
+    """desc from the folder's .folder.yaml. Cached by mtime."""
+    return _yaml_data(folder_path)[0]
 
 
 def _yaml_file_descs(folder_path):
     """{file name: annotation} from the folder's .folder.yaml, cached."""
-    return _yaml_data(folder_path)[2]
-
-
-def _yaml_history(folder_path):
-    """Paths this folder has been known by, oldest first."""
-    return _yaml_data(folder_path)[3]
-
-
-def _append_history_path(folder_path, old_path):
-    """Record `old_path` in history-paths, creating the field or file."""
-    scalar = _yaml_sequence_scalar(old_path)
-
-    def update(text):
-        result = _append_history_entry(text, scalar)
-        # Safety net: never leave a file behind that no longer reads back.
-        try:
-            data = yaml.safe_load(result)
-        except yaml.YAMLError as error:
-            raise ValueError('路径无法写入 YAML') from error
-        if (not isinstance(data, dict)
-                or old_path not in (data.get(HISTORY_KEY) or [])):
-            raise ValueError('路径无法写入 YAML')
-        return result
-
-    _update_yaml_file(folder_path, update)
-    _yaml_cache.pop(folder_path, None)
-
-
-def _record_move(from_path, to_path):
-    """Remember where a folder came from.
-
-    The old path is what finds that folder's coding-agent sessions, so it
-    is appended (never the current path); a path already listed is skipped.
-    """
-    if not os.path.isdir(to_path):
-        return
-    if from_path in _yaml_history(to_path):
-        return
-    try:
-        _append_history_path(to_path, from_path)
-    except (ValueError, OSError):
-        traceback.print_exc()
-
-
-def _on_move_signal(_connection, _sender, _path, _interface, _signal,
-                    parameters):
-    from_uri, to_uri = parameters.unpack()
-    from_path = _uri_to_local_path(from_uri)
-    to_path = _uri_to_local_path(to_uri)
-    if from_path is None or to_path is None:
-        return
-    _record_move(from_path, to_path)
-
-
-def _subscribe_move_signal():
-    """Listen for the file moves the fork's C layer publishes.
-
-    C reports only the fact (this was moved from there to here); every
-    business rule about it lives on this side. See
-    plus/docs/design/history-paths.md.
-    """
-    try:
-        connection = Gio.bus_get_sync(Gio.BusType.SESSION, None)
-        connection.signal_subscribe(MOVE_SIGNAL_NAME, MOVE_SIGNAL_INTERFACE,
-                                    MOVE_SIGNAL_MEMBER, MOVE_SIGNAL_PATH,
-                                    None, Gio.DBusSignalFlags.NONE,
-                                    _on_move_signal)
-    except Exception:
-        # No session bus, or the stubs used by the tests: history simply
-        # is not recorded automatically.
-        return None
-    return connection
+    return _yaml_data(folder_path)[1]
 
 
 def _yaml_scalar(value):
@@ -624,88 +457,6 @@ def _token_matches(token, folder, name, value):
             and token.get('desc') == value)
 
 
-def _sequence_indent(text, sequence_node):
-    """Leading whitespace of the line a block sequence's first item is on."""
-    first = sequence_node.value[0]
-    line_start = text.rfind('\n', 0, first.start_mark.index) + 1
-    prefix = text[line_start:first.start_mark.index]
-    return prefix[:len(prefix) - len(prefix.lstrip())]
-
-
-def _append_to_sequence(text, sequence_node, scalar):
-    """Text with one more scalar appended to the sequence `sequence_node`."""
-    newline = '\r\n' if '\r\n' in text else '\n'
-
-    if sequence_node.flow_style:
-        close = text.rfind(']', sequence_node.start_mark.index,
-                           sequence_node.end_mark.index)
-        if close < 0:
-            raise ValueError('.folder.yaml 中无法定位列表')
-        prefix = text[:close].rstrip()
-        if prefix.endswith(','):
-            separator = ' '
-        elif sequence_node.value:
-            separator = ', '
-        else:
-            separator = ''
-        return text[:close] + f'{separator}{scalar}' + text[close:]
-
-    entry = f'{_sequence_indent (text, sequence_node)}- {scalar}{newline}'
-    return _insert_block_entry (text, sequence_node, entry, False)
-
-
-def _yaml_sequence_scalar(value):
-    """`value` serialized as a YAML sequence item, quoted as needed.
-
-    A value can be plain after `key: ` and still need quoting as a `- `
-    item, so dump a one-element sequence and take what is inside the
-    brackets — the same trick _yaml_pair uses for mapping entries.
-    """
-    if not value:
-        raise ValueError('路径不能为空')
-    if '\n' in value or '\r' in value:
-        raise ValueError('路径不能包含换行')
-    dumped = yaml.safe_dump([value], default_flow_style=True,
-                            allow_unicode=True, width=10 ** 9).strip()
-    if not (dumped.startswith('[') and dumped.endswith(']')):
-        raise ValueError('路径无法写入 YAML')
-    scalar = dumped[1:-1]
-    if yaml.safe_load('[' + scalar + ']') != [value]:
-        raise ValueError('路径无法写入 YAML')
-    return scalar
-
-
-def _append_history_entry(text, scalar):
-    """Text with one more entry in the top-level history-paths sequence."""
-    newline = '\r\n' if '\r\n' in text else '\n'
-
-    if not text:
-        return f'{HISTORY_KEY}:{newline}  - {scalar}{newline}'
-
-    node = _compose_mapping(text)
-    matches = _find_key_nodes (node, HISTORY_KEY)
-    if len(matches) > 1:
-        raise ValueError(f'.folder.yaml 中存在重复的 {HISTORY_KEY}')
-
-    if not matches:
-        if node.flow_style:
-            entry = f'{HISTORY_KEY}: [{scalar}]'
-        else:
-            entry = f'{HISTORY_KEY}:{newline}  - {scalar}'
-        return _put_in_mapping (text, node, HISTORY_KEY, scalar,
-                                entry_body=entry, before_document_end=True)
-
-    value_node = matches[0][1]
-    if isinstance (value_node, yaml.SequenceNode):
-        return _append_to_sequence (text, value_node, scalar)
-
-    # A bare `history-paths:` parses as a null scalar: turn it into a
-    # one-entry block sequence.
-    start = value_node.start_mark.index
-    end = value_node.end_mark.index
-    return text[:start] + f'{newline}  - {scalar}' + text[end:]
-
-
 def _yaml_pair(name, value):
     """`<name>: <value>`, both sides quoted the way YAML requires.
 
@@ -876,29 +627,6 @@ def _remove_key_in_folder(folder_path, key):
         folder_path, lambda text: _remove_yaml_key(text, key))
 
 
-def _set_archived(folder_path, archived):
-    """Write or remove `archived: true` in the folder's .folder.yaml.
-
-    Removing it deletes the file when no other data remains. Idempotent:
-    a folder already in the requested state is left untouched (missing
-    file + unarchive is also a no-op).
-    """
-    if archived:
-        if _yaml_info(folder_path)[1] is True:
-            return
-
-        def update(text):
-            scalar = 'true'
-            return (f'{ARCHIVED_KEY}: {scalar}\n' if text == ''
-                    else _replace_yaml_key(text, ARCHIVED_KEY, scalar))
-
-        _update_yaml_file(folder_path, update)
-    elif os.path.exists(os.path.join(folder_path, YAML_NAME)):
-        # Missing file + unarchive: nothing to do.
-        _remove_key_in_folder(folder_path, ARCHIVED_KEY)
-
-
-
 # --- icon-view captions ---------------------------------------------------
 # The name label under the icon is always shown; captions are extra lines
 # below it. Making 'desc' the first caption puts the description directly
@@ -994,16 +722,6 @@ def _local_path(file):
         return None
 
 
-def _uri_to_local_path(uri):
-    """Local path for a file:// URI, or None."""
-    if not uri.startswith('file:'):
-        return None
-    try:
-        return GLib.filename_from_uri(uri)[0]
-    except GLib.Error:
-        return None
-
-
 def _local_folder_path(file):
     if not file.is_directory():
         return None
@@ -1059,12 +777,10 @@ def _resolve_annotation(path, folder, name):
 
 
 def _apply(file):
-    """Set/clear the desc and group extension attributes for one item.
+    """Set/clear the desc extension attribute for one item.
 
     A folder's desc is its own .folder.yaml; a plain file's annotation is
-    looked up in its parent folder's. The group attribute is independent
-    of the on/off switch: the switch only controls the description
-    captions, while archived folders are always grouped.
+    looked up in its parent folder's.
     """
     path = _local_path(file)
     if path is None:
@@ -1080,7 +796,7 @@ def _apply(file):
             file.add_string_attribute(ATTR, '')
         return
 
-    name, archived = _yaml_info(path)
+    name = _yaml_info(path)
     if _enabled() and name:
         file.add_string_attribute(ATTR, name)
         _shown.add(path)
@@ -1088,13 +804,6 @@ def _apply(file):
         # Extension attributes have no removal: an empty value clears the
         # line. Needed when desc is removed or the switch is turned off.
         file.add_string_attribute(ATTR, '')
-
-    if archived is True:
-        file.add_string_attribute(GROUP_ATTR, ARCHIVED_LABEL)
-        _grouped.add(path)
-    elif path in _grouped:
-        file.add_string_attribute(GROUP_ATTR, '')
-        _grouped.discard(path)
 
 
 def _refresh_folder(folder):
@@ -1121,31 +830,6 @@ def _refresh_folder(folder):
 
 
 # --- nautilus extension points -------------------------------------------
-
-def _running_as_plus(candidates=None):
-    """True when loaded by the nautilus-plus fork (has the C filter hook).
-
-    The hide-archived toggle only makes sense in the fork: the stock
-    nautilus has no filter, so the menu item is not offered there.
-    nautilus-python embeds CPython in-process, so /proc/self/exe is the
-    host binary; fall back to cmdline and argv[0] for odd setups.
-    """
-    if candidates is None:
-        candidates = []
-        try:
-            candidates.append(os.path.realpath('/proc/self/exe'))
-        except OSError:
-            pass
-        try:
-            with open('/proc/self/cmdline', 'rb') as f:
-                candidates.append(f.read().split(b'\0', 1)[0].decode(
-                    'utf-8', 'replace'))
-        except OSError:
-            pass
-        if sys.argv:
-            candidates.append(sys.argv[0])
-    return any(os.path.basename(c) == 'nautilus-plus' for c in candidates)
-
 
 def _active_window():
     application = Gio.Application.get_default()
@@ -1181,8 +865,7 @@ class FolderMetaMenu(GObject.GObject, Nautilus.MenuProvider):
         self._alerts = set()
 
     def get_file_items(self, files):
-        # Editing a description or an annotation targets one item; a
-        # multi-selection keeps the batch archive toggle only.
+        # Editing a description or an annotation targets one item.
         items = []
         if len(files) == 1:
             file = files[0]
@@ -1206,48 +889,13 @@ class FolderMetaMenu(GObject.GObject, Nautilus.MenuProvider):
                 ))
                 items[-1].connect('activate', self._on_edit_file_desc,
                                   file, *target)
-
-        folders = [(file, path) for file in files
-                   if (path := _local_folder_path(file)) is not None]
-        if not folders:
-            return items
-
-        # Dynamic action label: offer unarchive only when every selected
-        # folder is archived; mixed selections offer archiving (already
-        # archived members are left alone).
-        all_archived = all(_yaml_info(folder)[1] is True
-                           for _file, folder in folders)
-        items.append(Nautilus.MenuItem(
-            name='FolderMeta::ToggleArchived',
-            label='取消归档' if all_archived else '归档',
-            tip='切换文件夹 .folder.yaml 中的 archived: true',
-            icon=None,
-        ))
-        items[-1].connect('activate', self._on_toggle_archived,
-                          folders, not all_archived)
         return items
-
-    def _on_toggle_archived(self, _item, folders, archived):
-        failures = []
-        for file, folder in folders:
-            try:
-                _set_archived(folder, archived)
-            except Exception as error:
-                traceback.print_exc()
-                failures.append(f'{os.path.basename(folder)}: '
-                                f'{error or "写入 .folder.yaml 失败"}')
-                continue
-            _yaml_cache.pop(folder, None)
-            _apply(file)
-            file.invalidate_extension_info()
-        if failures:
-            self._show_error('归档状态修改失败', '\n'.join(failures))
 
     def _on_edit_name(self, _item, file):
         folder = _local_folder_path(file)
         if folder is None:
             return
-        desc, _archived = _yaml_info(folder)
+        desc = _yaml_info(folder)
         self._open_editor(
             file, '修改描述', '描述', desc,
             lambda window, entry: self._save_desc(window, entry, file, folder))
@@ -1391,23 +1039,7 @@ class FolderMetaMenu(GObject.GObject, Nautilus.MenuProvider):
             icon=None,
         )
         item.connect('activate', self._on_toggle, current_folder)
-        items = [item]
-
-        # Hide-archived needs the fork's C filter hook; in the stock
-        # nautilus the toggle would do nothing, so don't offer it there.
-        # Same when the fork's schema is missing: don't show a control that
-        # cannot have any effect.
-        if _running_as_plus() and _plus_settings is not None:
-            hide_item = Nautilus.MenuItem(
-                name='FolderMeta::ToggleHideArchived',
-                label='隐藏归档' if not _hide_archived() else '显示归档',
-                tip='切换已归档文件夹的可见性(由 nautilus-plus 过滤)',
-                icon=None,
-            )
-            hide_item.connect('activate', self._on_toggle_hide_archived,
-                              current_folder)
-            items.append(hide_item)
-        return items
+        return [item]
 
     def _on_toggle(self, _item, current_folder):
         try:
@@ -1425,20 +1057,18 @@ class FolderMetaMenu(GObject.GObject, Nautilus.MenuProvider):
         except Exception:
             traceback.print_exc()
 
-    def _on_toggle_hide_archived(self, _item, current_folder):
-        try:
-            _set_hide_archived(not _hide_archived())
-            _refresh_folder(current_folder)
-            # Same menu-rebuild trick as the captions toggle: touching the
-            # current folder's extension info schedules a menu refresh.
-            current_folder.add_string_attribute(
-                ATTR, current_folder.get_string_attribute(ATTR) or '')
-        except Exception:
-            traceback.print_exc()
+
+class FolderMetaColumns(GObject.GObject, Nautilus.ColumnProvider):
+    """A "描述" list-view column fed by the same `desc` attribute."""
+
+    def get_columns(self):
+        return [Nautilus.Column(
+            name='FolderMeta::Desc',
+            attribute=ATTR,
+            label='描述',
+            description='文件夹描述或文件注释(.folder.yaml)',
+        )]
 
 
 # Keep the icon-view captions in sync from the start (switch defaults to on).
 _sync_captions(_enabled())
-
-# Holds the bus connection so the move subscription stays alive.
-_move_subscription = _subscribe_move_signal()
