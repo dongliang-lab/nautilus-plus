@@ -1771,14 +1771,6 @@ request_is_satisfied (NautilusDirectory *directory,
         }
     }
 
-    if (REQUEST_WANTS_TYPE (request, REQUEST_EXTENSION_INFO))
-    {
-        if (has_problem (directory, file, lacks_extension_info))
-        {
-            return FALSE;
-        }
-    }
-
     if (REQUEST_WANTS_TYPE (request, REQUEST_FILESYSTEM_INFO))
     {
         if (has_problem (directory, file, lacks_filesystem_info))

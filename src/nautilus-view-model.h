@@ -14,9 +14,6 @@ G_DECLARE_FINAL_TYPE (NautilusViewModel, nautilus_view_model, NAUTILUS, VIEW_MOD
 
 NautilusViewModel * nautilus_view_model_new (gboolean single_selection);
 
-void nautilus_view_model_set_tail_model (NautilusViewModel *self,
-                                         GListModel        *tail_model);
-GPtrArray *nautilus_view_model_dup_unfiltered_root_items (NautilusViewModel *self);
 GtkFilter *nautilus_view_model_get_filter (NautilusViewModel *self);
 void nautilus_view_model_set_filter (NautilusViewModel *self,
                                      GtkFilter         *filter);

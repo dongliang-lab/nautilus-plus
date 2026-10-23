@@ -20,8 +20,6 @@
 #include "nautilus-file.h"
 #include "nautilus-file-utilities.h"
 #include "nautilus-global-preferences.h"
-#include "nautilus-grouped-view.h"
-#include "nautilus-hidden-group-card.h"
 #include "nautilus-label-cell.h"
 #include "nautilus-metadata.h"
 #include "nautilus-name-cell.h"
@@ -360,84 +358,17 @@ setup_row (GtkSignalListItemFactory *factory,
     gtk_expression_bind (expression, columnviewrow, "accessible-label", columnviewrow);
 }
 
-static void
-bind_row (GtkSignalListItemFactory *factory,
-          GtkColumnViewRow         *columnviewrow,
-          gpointer                  user_data)
-{
-    GtkTreeListRow *row = GTK_TREE_LIST_ROW (
-        gtk_column_view_row_get_item (columnviewrow));
-    g_autoptr (NautilusViewItem) item = NAUTILUS_VIEW_ITEM (
-        gtk_tree_list_row_get_item (row));
-
-    gtk_column_view_row_set_selectable (
-        columnviewrow, !nautilus_view_item_is_auxiliary (item));
-}
-
-static void
-setup_group_header (GtkSignalListItemFactory *factory,
-                    GtkListHeader            *listheader,
-                    gpointer                  user_data)
-{
-    GtkWidget *label = gtk_label_new (NULL);
-
-    gtk_widget_add_css_class (label, "heading");
-    gtk_label_set_xalign (GTK_LABEL (label), 0.0);
-    gtk_widget_set_margin_start (label, 8);
-
-    gtk_list_header_set_child (listheader, label);
-}
-
-static void
-bind_group_header (GtkSignalListItemFactory *factory,
-                   GtkListHeader            *listheader,
-                   gpointer                  user_data)
-{
-    GtkWidget *label = gtk_list_header_get_child (listheader);
-    GtkTreeListRow *row = GTK_TREE_LIST_ROW (gtk_list_header_get_item (listheader));
-    g_autoptr (NautilusViewItem) item = NAUTILUS_VIEW_ITEM (gtk_tree_list_row_get_item (row));
-    g_autofree char *group = NULL;
-
-    if (nautilus_view_item_is_auxiliary (item))
-    {
-        /* The tail card is already self-describing in its item row. It forms
-         * a separate final section but needs no additional group header. */
-        gtk_widget_set_visible (label, FALSE);
-        return;
-    }
-
-    group = nautilus_grouped_view_get_group_string (nautilus_view_item_get_file (item));
-
-    if (group == NULL || group[0] == '\0')
-    {
-        /* Ungrouped section: no header. An invisible child makes the header
-         * measure zero height. */
-        gtk_widget_set_visible (label, FALSE);
-    }
-    else
-    {
-        gtk_label_set_label (GTK_LABEL (label), group);
-        gtk_widget_set_visible (label, TRUE);
-    }
-}
-
 static GtkColumnView *
 create_view_ui (NautilusListView *self)
 {
     GtkWidget *widget;
     g_autoptr (GtkListItemFactory) row_factory = gtk_signal_list_item_factory_new ();
-    g_autoptr (GtkListItemFactory) header_factory = gtk_signal_list_item_factory_new ();
 
     widget = gtk_column_view_new (NULL);
 
     gtk_widget_set_hexpand (widget, TRUE);
 
     g_signal_connect (row_factory, "setup", G_CALLBACK (setup_row), self);
-    g_signal_connect (row_factory, "bind", G_CALLBACK (bind_row), self);
-
-    g_signal_connect (header_factory, "setup", G_CALLBACK (setup_group_header), self);
-    g_signal_connect (header_factory, "bind", G_CALLBACK (bind_group_header), self);
-    gtk_column_view_set_header_factory (GTK_COLUMN_VIEW (widget), header_factory);
 
     /* We don't use the built-in child activation feature for click because it
      * doesn't fill all our needs nor does it match our expected behavior.
@@ -911,17 +842,9 @@ setup_name_cell (GtkSignalListItemFactory *factory,
 {
     NautilusListView *self = NAUTILUS_LIST_VIEW (user_data);
     NautilusViewCell *cell;
-    GtkWidget *stack;
-    GtkWidget *card_slot;
 
-    stack = gtk_stack_new ();
-    card_slot = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
     cell = nautilus_name_cell_new (NAUTILUS_LIST_BASE (self));
-    gtk_stack_add_named (GTK_STACK (stack), GTK_WIDGET (cell), "file");
-    gtk_stack_add_named (GTK_STACK (stack), card_slot, "card");
-    gtk_column_view_cell_set_child (listitem, stack);
-    g_object_set_data (G_OBJECT (listitem), "file-cell", cell);
-    g_object_set_data (G_OBJECT (listitem), "card-slot", card_slot);
+    gtk_column_view_cell_set_child (listitem, GTK_WIDGET (cell));
     setup_cell_common (G_OBJECT (listitem), cell);
     setup_cell_hover_inner_target (cell, nautilus_name_cell_get_content (NAUTILUS_NAME_CELL (cell)));
 
@@ -980,45 +903,18 @@ on_row_children_changed (GObject    *gobject,
 }
 
 static void
-clear_list_card_slot (GtkWidget *slot)
-{
-    GtkWidget *child = gtk_widget_get_first_child (slot);
-
-    if (child != NULL)
-    {
-        gtk_box_remove (GTK_BOX (slot), child);
-    }
-}
-
-static void
 bind_name_cell (GtkSignalListItemFactory *factory,
                 GtkColumnViewCell        *listitem,
                 gpointer                  user_data)
 {
+    GtkWidget *cell;
     NautilusListView *self = user_data;
-    GtkWidget *stack = gtk_column_view_cell_get_child (listitem);
-    GtkWidget *cell = g_object_get_data (G_OBJECT (listitem), "file-cell");
-    GtkWidget *card_slot = g_object_get_data (G_OBJECT (listitem), "card-slot");
-    g_autoptr (NautilusViewItem) item = get_view_item (listitem);
-    GObject *auxiliary = nautilus_view_item_get_auxiliary (item);
+    g_autoptr (NautilusViewItem) item = NULL;
 
-    if (NAUTILUS_IS_HIDDEN_GROUP_CARD (auxiliary))
-    {
-        GtkWidget *card;
-        guint icon_size;
+    cell = gtk_column_view_cell_get_child (listitem);
+    item = get_view_item (listitem);
 
-        g_object_get (self, "icon-size", &icon_size, NULL);
-        clear_list_card_slot (card_slot);
-        card = nautilus_hidden_group_card_create_widget (
-            NAUTILUS_HIDDEN_GROUP_CARD (auxiliary), FALSE, icon_size);
-        gtk_widget_set_hexpand (card, TRUE);
-        gtk_box_append (GTK_BOX (card_slot), card);
-        gtk_stack_set_visible_child_name (GTK_STACK (stack), "card");
-        return;
-    }
-
-    gtk_stack_set_visible_child_name (GTK_STACK (stack), "file");
-    nautilus_view_item_set_item_ui (item, cell);
+    nautilus_view_item_set_item_ui (item, gtk_column_view_cell_get_child (listitem));
 
     if (self->expand_as_a_tree)
     {
@@ -1042,7 +938,6 @@ unbind_name_cell (GtkSignalListItemFactory *factory,
                   gpointer                  user_data)
 {
     NautilusListView *self = user_data;
-    GtkWidget *card_slot = g_object_get_data (G_OBJECT (listitem), "card-slot");
     g_autoptr (NautilusViewItem) item = NULL;
 
     item = get_view_item (listitem);
@@ -1052,12 +947,6 @@ unbind_name_cell (GtkSignalListItemFactory *factory,
         return;
     }
     g_return_if_fail (NAUTILUS_IS_VIEW_ITEM (item));
-
-    if (nautilus_view_item_is_auxiliary (item))
-    {
-        clear_list_card_slot (card_slot);
-        return;
-    }
 
     nautilus_view_item_set_item_ui (item, NULL);
 
@@ -1070,18 +959,6 @@ unbind_name_cell (GtkSignalListItemFactory *factory,
                                               on_row_children_changed,
                                               self);
     }
-}
-
-static void
-bind_non_name_cell (GtkSignalListItemFactory *factory,
-                    GtkColumnViewCell        *listitem,
-                    gpointer                  user_data)
-{
-    g_autoptr (NautilusViewItem) item = get_view_item (listitem);
-    gboolean auxiliary = nautilus_view_item_is_auxiliary (item);
-
-    gtk_widget_set_visible (gtk_column_view_cell_get_child (listitem),
-                            !auxiliary);
 }
 
 static void
@@ -1166,7 +1043,6 @@ setup_view_columns (NautilusListView *self)
         else if (g_strcmp0 (name, "starred") == 0)
         {
             g_signal_connect (factory, "setup", G_CALLBACK (setup_star_cell), self);
-            g_signal_connect (factory, "bind", G_CALLBACK (bind_non_name_cell), self);
 
             gtk_column_view_column_set_title (view_column, "");
             gtk_column_view_column_set_resizable (view_column, FALSE);
@@ -1176,7 +1052,6 @@ setup_view_columns (NautilusListView *self)
         else
         {
             g_signal_connect (factory, "setup", G_CALLBACK (setup_label_cell), self);
-            g_signal_connect (factory, "bind", G_CALLBACK (bind_non_name_cell), self);
         }
 
         gtk_column_view_append_column (self->view_ui, view_column);
@@ -1204,19 +1079,13 @@ on_model_changed (NautilusListView *self)
         g_autoptr (GtkMultiSorter) sorter = gtk_multi_sorter_new ();
         GtkSorter *column_view_sorter = gtk_column_view_get_sorter (self->view_ui);
         g_autoptr (GtkCustomSorter) directories_sorter = NULL;
-        g_autoptr (GtkSorter) section_sorter = NULL;
 
         directories_sorter = gtk_custom_sorter_new (sort_directories_func, &self->directories_first, NULL);
-        /* Group partition first, then directories-first, then the column sort. */
-        gtk_multi_sorter_append (sorter, nautilus_grouped_view_create_group_sorter ());
         gtk_multi_sorter_append (sorter, g_object_ref (GTK_SORTER (directories_sorter)));
         gtk_multi_sorter_append (sorter, g_object_ref (column_view_sorter));
         g_set_object (&self->view_model_sorter, GTK_SORTER (sorter));
 
         nautilus_view_model_set_sorter (model, self->view_model_sorter);
-
-        section_sorter = nautilus_grouped_view_create_section_sorter ();
-        nautilus_view_model_set_section_sorter (model, section_sorter);
 
         nautilus_view_model_expand_as_a_tree (model, self->expand_as_a_tree);
 

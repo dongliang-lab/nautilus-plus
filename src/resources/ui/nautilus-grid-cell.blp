@@ -78,20 +78,4 @@ template $NautilusGridCell: $NautilusViewCell {
       ]
     }
   }
-
-  // Group badge, centered over the icon of every grouped item. It is an
-  // overlay (allocated in size_allocate, taking no layout space) and must
-  // not take input events, so taps reach the icon below.
-  Label group_header {
-    visible: false;
-    xalign: 0.5;
-    yalign: 0.5;
-    ellipsize: end;
-    max-width-chars: 12;
-    can-target: false;
-
-    styles [
-      "group-badge",
-    ]
-  }
 }

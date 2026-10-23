@@ -146,7 +146,6 @@ gboolean                nautilus_file_check_if_ready                    (Nautilu
 void                    nautilus_file_invalidate_attributes             (NautilusFile                   *file,
 									 NautilusFileAttributes          attributes);
 void                    nautilus_file_invalidate_all_attributes         (NautilusFile                   *file);
-gboolean                nautilus_file_is_extension_info_pending         (NautilusFile                   *file);
 
 /* Basic attributes for file objects. */
 gboolean                nautilus_file_contains_text                     (NautilusFile                   *file);
@@ -362,12 +361,6 @@ void                    nautilus_file_set_boolean_metadata              (Nautilu
 char *                  nautilus_file_get_string_attribute              (NautilusFile                   *file,
 									 const char                     *attribute_name);
 char *                  nautilus_file_get_string_attribute_q            (NautilusFile                   *file,
-									 GQuark                          attribute_q);
-/* Only extension attributes, bypassing built-in attributes. Some built-in
- * attribute names (e.g. "group" = POSIX group name) shadow the extension
- * attribute table in nautilus_file_get_string_attribute_q, so hooks which
- * must read exactly what extensions wrote need this accessor. */
-char *                  nautilus_file_get_extension_attribute            (NautilusFile                   *file,
 									 GQuark                          attribute_q);
 char *                  nautilus_file_get_string_attribute_with_default (NautilusFile                   *file,
 									 const char                     *attribute_name);

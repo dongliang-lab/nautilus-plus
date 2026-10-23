@@ -110,20 +110,12 @@ libnautilus_sources = [
   'nautilus-files-view-dnd.h',
   'nautilus-files-view.c',
   'nautilus-files-view.h',
-  'nautilus-archived-filter.c',
-  'nautilus-archived-filter.h',
-  'nautilus-plus-events.c',
-  'nautilus-plus-events.h',
-  'nautilus-hidden-group-card.c',
-  'nautilus-hidden-group-card.h',
   'nautilus-floating-bar.c',
   'nautilus-floating-bar.h',
   'nautilus-freedesktop-dbus.c',
   'nautilus-freedesktop-dbus.h',
   'nautilus-global-preferences.c',
   'nautilus-global-preferences.h',
-  'nautilus-grouped-view.c',
-  'nautilus-grouped-view.h',
   'nautilus-grid-cell.c',
   'nautilus-grid-cell.h',
   'nautilus-grid-view.c',
@@ -323,7 +315,7 @@ libnautilus_dep = declare_dependency(
 )
 
 nautilus = executable(
-  nautilus_bin,
+  'nautilus',
   'nautilus-main.c',
   dependencies: libnautilus_dep,
   install: true

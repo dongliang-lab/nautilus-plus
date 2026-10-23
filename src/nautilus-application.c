@@ -218,7 +218,7 @@ nautilus_application_create_window (NautilusApplication *self,
                                  MAX (NAUTILUS_WINDOW_MIN_WIDTH, default_width),
                                  MAX (NAUTILUS_WINDOW_MIN_HEIGHT, default_height));
 
-    if (g_strcmp0 (PROFILE, "Devel") == 0)
+    if (g_strcmp0 (PROFILE, "") != 0)
     {
         gtk_widget_add_css_class (GTK_WIDGET (window), "devel");
     }
@@ -1035,14 +1035,10 @@ nautilus_application_dbus_register (GApplication     *app,
         return FALSE;
     }
 
-    self->fdb_manager = NULL;
-    if (g_strcmp0 (PROFILE, "Plus") != 0)
+    self->fdb_manager = nautilus_freedesktop_dbus_new ();
+    if (!nautilus_freedesktop_dbus_register (self->fdb_manager, connection, error))
     {
-        self->fdb_manager = nautilus_freedesktop_dbus_new ();
-        if (!nautilus_freedesktop_dbus_register (self->fdb_manager, connection, error))
-        {
-            return FALSE;
-        }
+        return FALSE;
     }
 
     self->portal_implementation = nautilus_portal_new ();
@@ -1140,19 +1136,13 @@ update_dbus_opened_locations (NautilusApplication *self)
     /* Make array NULL-terminated */
     g_ptr_array_add (open_locations, NULL);
 
-    if (self->fdb_manager != NULL)
-    {
-        nautilus_freedesktop_dbus_set_open_locations (self->fdb_manager,
-                                                      (const gchar **) open_locations->pdata);
-    }
+    nautilus_freedesktop_dbus_set_open_locations (self->fdb_manager,
+                                                  (const gchar **) open_locations->pdata);
 
     g_autoptr (GVariant) windows_to_locations = g_variant_ref_sink (
         g_variant_builder_end (&windows_to_locations_builder));
-    if (self->fdb_manager != NULL)
-    {
-        nautilus_freedesktop_dbus_set_open_windows_with_locations (self->fdb_manager,
-                                                                   windows_to_locations);
-    }
+    nautilus_freedesktop_dbus_set_open_windows_with_locations (self->fdb_manager,
+                                                               windows_to_locations);
 }
 
 static void

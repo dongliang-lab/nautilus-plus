@@ -59,23 +59,6 @@ template $NautilusNameCell: $NautilusViewCell {
             label: bind template.item as <$NautilusViewItem>.file as <$NautilusFile>.display-name;
           }
 
-          Label desc {
-            visible: false;
-            ellipsize: middle;
-            lines: 1;
-            wrap: false;
-            wrap-mode: word_char;
-            halign: start;
-            has-tooltip: true;
-            attributes: "0 -1 insert-hyphens false";
-            query-tooltip => $on_label_query_tooltip();
-
-            styles [
-              "caption",
-              "dim-label",
-            ]
-          }
-
           Box emblems_box {
             orientation: horizontal;
             halign: start;

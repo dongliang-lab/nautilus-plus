@@ -15,7 +15,6 @@ struct _NautilusViewItem
     gboolean drag_accept;
     gboolean loading;
     NautilusFile *file;
-    GObject *auxiliary;
     GtkWidget *item_ui;
 };
 
@@ -57,7 +56,6 @@ nautilus_view_item_finalize (GObject *object)
     NautilusViewItem *self = NAUTILUS_VIEW_ITEM (object);
 
     g_clear_object (&self->file);
-    g_clear_object (&self->auxiliary);
 
     G_OBJECT_CLASS (nautilus_view_item_parent_class)->finalize (object);
 }
@@ -191,35 +189,6 @@ nautilus_view_item_new (NautilusFile *file)
     return g_object_new (NAUTILUS_TYPE_VIEW_ITEM,
                          "file", file,
                          NULL);
-}
-
-NautilusViewItem *
-nautilus_view_item_new_auxiliary (GObject *auxiliary)
-{
-    NautilusViewItem *item;
-
-    g_return_val_if_fail (G_IS_OBJECT (auxiliary), NULL);
-
-    item = g_object_new (NAUTILUS_TYPE_VIEW_ITEM, NULL);
-    item->auxiliary = g_object_ref (auxiliary);
-
-    return item;
-}
-
-GObject *
-nautilus_view_item_get_auxiliary (NautilusViewItem *self)
-{
-    g_return_val_if_fail (NAUTILUS_IS_VIEW_ITEM (self), NULL);
-
-    return self->auxiliary;
-}
-
-gboolean
-nautilus_view_item_is_auxiliary (NautilusViewItem *self)
-{
-    g_return_val_if_fail (NAUTILUS_IS_VIEW_ITEM (self), FALSE);
-
-    return self->auxiliary != NULL;
 }
 
 void

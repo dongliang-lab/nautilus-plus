@@ -18,9 +18,6 @@ G_BEGIN_DECLS
 G_DECLARE_FINAL_TYPE (NautilusViewItem, nautilus_view_item, NAUTILUS, VIEW_ITEM, GObject)
 
 NautilusViewItem * nautilus_view_item_new           (NautilusFile *file);
-NautilusViewItem * nautilus_view_item_new_auxiliary (GObject      *auxiliary);
-GObject *           nautilus_view_item_get_auxiliary (NautilusViewItem *self);
-gboolean            nautilus_view_item_is_auxiliary  (NautilusViewItem *self);
 
 void               nautilus_view_item_set_cut       (NautilusViewItem *self,
                                                      gboolean          is_cut);

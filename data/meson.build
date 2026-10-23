@@ -1,11 +1,6 @@
 icondir = join_paths('icons', 'hicolor', 'scalable', 'apps')
-if profile == 'Plus'
-  app_icon = join_paths(meson.project_source_root(), 'plus', 'icons', 'org.gnome.NautilusPlus.svg')
-else
-  app_icon = join_paths(icondir, 'org.gnome.Nautilus' + profile + '.svg')
-endif
 install_data(
-  app_icon,
+  join_paths(icondir, 'org.gnome.Nautilus' + profile + '.svg'),
   install_dir: join_paths(datadir, icondir),
   rename: '@0@.svg'.format(application_id)
 )
@@ -24,28 +19,18 @@ desktop_conf = configuration_data()
 
 desktop_conf.set('icon', application_id)
 
-if profile == 'Plus'
-  desktop = configure_file(
-    input: join_paths(meson.project_source_root(), 'plus', 'desktop', 'org.gnome.NautilusPlus.desktop.in'),
-    output: '@0@.desktop'.format(application_id),
-    configuration: desktop_conf,
-    install: true,
-    install_dir: desktopdir
-  )
-else
-  desktop = i18n.merge_file(
-    input: configure_file(
-      input: files('org.gnome.Nautilus.desktop.in.in'),
-      output: 'org.gnome.Nautilus.desktop.in',
-      configuration: desktop_conf
-    ),
-    output: '@0@.desktop'.format(application_id),
-    install: true,
-    install_dir: desktopdir,
-    po_dir: po_dir,
-    type: 'desktop'
-  )
-endif
+desktop = i18n.merge_file(
+  input: configure_file(
+    input: files('org.gnome.Nautilus.desktop.in.in'),
+    output: 'org.gnome.Nautilus.desktop.in',
+    configuration: desktop_conf
+  ),
+  output: '@0@.desktop'.format(application_id),
+  install: true,
+  install_dir: desktopdir,
+  po_dir: po_dir,
+  type: 'desktop'
+)
 
 desktop_autorun_software = i18n.merge_file(
   input: 'nautilus-autorun-software.desktop.in',
@@ -69,32 +54,21 @@ if python.found()
 endif
 appdata_conf.set('release-version', release_version)
 
-if profile == 'Plus'
-  appdata = configure_file(
-    input: join_paths(meson.project_source_root(), 'plus', 'desktop', 'org.gnome.NautilusPlus.metainfo.xml.in'),
-    output: '@0@.metainfo.xml'.format(application_id),
-    configuration: appdata_conf,
-    install: true,
-    install_dir: join_paths(datadir, 'metainfo')
-  )
-else
-  appdata = i18n.merge_file(
-    input: configure_file(
-      input: files('org.gnome.Nautilus.metainfo.xml.in.in'),
-      output: 'org.gnome.Nautilus.metainfo.xml.in',
-      configuration: appdata_conf
-    ),
-    output: '@0@.metainfo.xml'.format(application_id),
-    install: true,
-    install_dir: join_paths(datadir, 'metainfo'),
-    po_dir: po_dir
-  )
-endif
+appdata = i18n.merge_file(
+  input: configure_file(
+    input: files('org.gnome.Nautilus.metainfo.xml.in.in'),
+    output: 'org.gnome.Nautilus.metainfo.xml.in',
+    configuration: appdata_conf
+  ),
+  output: '@0@.metainfo.xml'.format(application_id),
+  install: true,
+  install_dir: join_paths(datadir, 'metainfo'),
+  po_dir: po_dir
+)
 
 service_conf = configuration_data()
 service_conf.set('appid', application_id)
 service_conf.set('bindir', join_paths(prefix, bindir))
-service_conf.set('exe', nautilus_bin)
 
 configure_file(
   input: 'org.gnome.Nautilus.service.in',
@@ -103,14 +77,12 @@ configure_file(
   install_dir: servicedir
 )
 
-if profile != 'Plus'
-  configure_file(
-    input: 'org.freedesktop.FileManager1.service.in',
-    output: 'org.freedesktop.FileManager1.service',
-    configuration: service_conf,
-    install_dir: servicedir
-  )
-endif
+configure_file(
+  input: 'org.freedesktop.FileManager1.service.in',
+  output: 'org.freedesktop.FileManager1.service',
+  configuration: service_conf,
+  install_dir: servicedir
+)
 
 search_provider_conf = configuration_data()
 
@@ -134,38 +106,18 @@ install_data(
   install_dir: join_paths(datadir, 'glib-2.0', 'schemas')
 )
 
-# Fork-only settings ship in their own schema file. They must not be added to
-# the upstream org.gnome.nautilus.gschema.xml above: that path is owned by the
-# distribution's nautilus package, so a system upgrade replaces the file and
-# silently drops fork-only keys -- and reading a missing key aborts the
-# process. See plus/docs/pitfalls.md and plus/docs/design/hide-archived.md.
-install_data(
-  join_paths(meson.project_source_root(), 'plus', 'gschema', 'org.gnome.NautilusPlus.gschema.xml'),
-  install_dir: join_paths(datadir, 'glib-2.0', 'schemas')
-)
-
 desktop_file_validate = find_program('desktop-file-validate', required: false)
 if desktop_file_validate.found()
-  if profile == 'Plus'
-    test(
-      'validate-desktop',
-      desktop_file_validate,
-      args: [
-        join_paths(meson.current_build_dir(), '@0@.desktop'.format(application_id))
-      ]
-    )
-  else
-    test(
-      'validate-desktop',
-      desktop_file_validate,
-      args: [
-        desktop.full_path()
-      ],
-      depends: [
-        desktop,
-      ]
-    )
-  endif
+  test(
+    'validate-desktop',
+    desktop_file_validate,
+    args: [
+      desktop.full_path()
+    ],
+    depends: [
+      desktop,
+    ]
+  )
   test(
     'validate-desktop-autorun-software',
     desktop_file_validate,
@@ -180,25 +132,15 @@ endif
 
 appstreamcli = find_program('appstreamcli', required: false)
 if appstreamcli.found()
-  if profile == 'Plus'
-    test(
-      'validate-appdata', appstreamcli,
-      args: [
-        'validate', '--no-net',
-        join_paths(meson.current_build_dir(), '@0@.metainfo.xml'.format(application_id))
-      ]
-    )
-  else
-    test(
-      'validate-appdata', appstreamcli,
-      args: [
-        'validate', '--no-net', appdata.full_path()
-      ],
-      depends: [
-        appdata,
-      ]
-    )
-  endif
+  test(
+    'validate-appdata', appstreamcli,
+    args: [
+      'validate', '--no-net', appdata.full_path()
+    ],
+    depends: [
+      appdata,
+    ]
+  )
 endif
 
 subdir('ontology')

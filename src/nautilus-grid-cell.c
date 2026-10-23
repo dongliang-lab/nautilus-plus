@@ -8,7 +8,6 @@
 
 #include "nautilus-file.h"
 #include "nautilus-global-preferences.h"
-#include "nautilus-grouped-view.h"
 #include "nautilus-icon-info.h"
 #include "nautilus-image.h"
 #include "nautilus-tag-manager.h"
@@ -31,7 +30,6 @@ struct _NautilusGridCell
     GtkWidget *first_caption;
     GtkWidget *second_caption;
     GtkWidget *third_caption;
-    GtkWidget *group_header;
 
     gboolean in_file_change;
 };
@@ -168,33 +166,6 @@ update_emblems (NautilusGridCell *self)
     }
 }
 
-/* Group badge: every grouped item shows its group name centered over the
- * icon. GtkGridView cannot start rows at section boundaries, so instead of
- * group headers the grid view tags each grouped item individually. The
- * badge is an overlay (takes no layout space, no input events). */
-static void
-update_group_header (NautilusGridCell *self)
-{
-    g_autoptr (NautilusViewItem) item = nautilus_view_cell_get_item (NAUTILUS_VIEW_CELL (self));
-    g_autofree char *group = NULL;
-    gboolean show;
-
-    show = FALSE;
-    if (item != NULL)
-    {
-        group = nautilus_grouped_view_get_group_string (nautilus_view_item_get_file (item));
-        show = group != NULL && group[0] != '\0';
-    }
-
-    if (gtk_widget_get_visible (self->group_header) != show ||
-        g_strcmp0 (gtk_label_get_text (GTK_LABEL (self->group_header)), group) != 0)
-    {
-        gtk_label_set_text (GTK_LABEL (self->group_header), group != NULL ? group : "");
-        gtk_widget_set_visible (self->group_header, show);
-        gtk_widget_queue_draw (GTK_WIDGET (self));
-    }
-}
-
 static void
 on_file_changed (NautilusGridCell *self)
 {
@@ -203,7 +174,6 @@ on_file_changed (NautilusGridCell *self)
     update_icon (self);
     update_emblems (self);
     update_captions (self);
-    update_group_header (self);
 
     self->in_file_change = FALSE;
 }
@@ -416,27 +386,6 @@ nautilus_grid_cell_size_allocate (GtkWidget *widget,
         baseline -= icon_size + VERTICAL_PADDING;
     }
     gtk_widget_size_allocate (self->labels_box, &child_allocation, baseline);
-
-    /* Group badge: centered over the icon, as an overlay (it takes no part
-     * in the layout above, so it is measured and allocated here). */
-    if (gtk_widget_get_visible (self->group_header))
-    {
-        gint badge_width, badge_height;
-        gint folder_opening_height = icon_size / 5 + 2;
-        gint folder_body_height = icon_size - folder_opening_height;
-
-        gtk_widget_measure (self->group_header, GTK_ORIENTATION_HORIZONTAL, -1,
-                            NULL, &badge_width, NULL, NULL);
-        gtk_widget_measure (self->group_header, GTK_ORIENTATION_VERTICAL, badge_width,
-                            NULL, &badge_height, NULL, NULL);
-
-        child_allocation = (GtkAllocation) {
-            EMBLEMS_BOX_WIDTH + (icon_size - badge_width) / 2,
-            folder_opening_height + (folder_body_height - badge_height) / 2,
-            badge_width, badge_height
-        };
-        gtk_widget_size_allocate (self->group_header, &child_allocation, -1);
-    }
 }
 
 static void
@@ -503,7 +452,6 @@ nautilus_grid_cell_class_init (NautilusGridCellClass *klass)
     gtk_widget_class_bind_template_child (widget_class, NautilusGridCell, first_caption);
     gtk_widget_class_bind_template_child (widget_class, NautilusGridCell, second_caption);
     gtk_widget_class_bind_template_child (widget_class, NautilusGridCell, third_caption);
-    gtk_widget_class_bind_template_child (widget_class, NautilusGridCell, group_header);
 
     gtk_widget_class_bind_template_callback (widget_class, on_label_query_tooltip);
 

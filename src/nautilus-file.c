@@ -6746,33 +6746,6 @@ nautilus_file_get_string_attribute_q (NautilusFile *file,
 }
 
 char *
-nautilus_file_get_extension_attribute (NautilusFile *file,
-                                       GQuark        attribute_q)
-{
-    const char *value;
-
-    g_return_val_if_fail (NAUTILUS_IS_FILE (file), NULL);
-
-    /* Only the extension attribute tables, without the built-in attribute
-     * branches of nautilus_file_get_string_attribute_q: the "group" quark,
-     * for instance, resolves to the POSIX group name there and would shadow
-     * a "group" attribute written by an extension. */
-    value = NULL;
-    if (file->details->pending_extension_attributes != NULL)
-    {
-        value = g_hash_table_lookup (file->details->pending_extension_attributes,
-                                     GINT_TO_POINTER (attribute_q));
-    }
-    if (value == NULL && file->details->extension_attributes != NULL)
-    {
-        value = g_hash_table_lookup (file->details->extension_attributes,
-                                     GINT_TO_POINTER (attribute_q));
-    }
-
-    return g_strdup (value);
-}
-
-char *
 nautilus_file_get_string_attribute (NautilusFile *file,
                                     const char   *attribute_name)
 {
@@ -7934,18 +7907,6 @@ nautilus_file_invalidate_extension_info_internal (NautilusFile *file)
 
     file->details->pending_info_providers =
         nautilus_module_get_extensions_for_type (NAUTILUS_TYPE_INFO_PROVIDER);
-}
-
-/* Whether the extension info providers have not all run yet. Extension
- * attributes (e.g. the grouped-view "group" key) are only final once this
- * returns FALSE; until then, getters may return NULL for a value that is
- * still to come. Fork feature: see plus/docs/design/hidden-group-card.md. */
-gboolean
-nautilus_file_is_extension_info_pending (NautilusFile *file)
-{
-    g_return_val_if_fail (NAUTILUS_IS_FILE (file), FALSE);
-
-    return file->details->pending_info_providers != NULL;
 }
 
 void

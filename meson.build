@@ -145,14 +145,10 @@ conf = configuration_data()
 profile = get_option('profile')
 name_suffix = ''
 app_id_suffix = ''
-nautilus_bin = 'nautilus'
 
 if get_option('profile') == 'Devel'
   app_id_suffix = '.Devel'
   name_suffix = ' (Development Snapshot)'
-elif get_option('profile') == 'Plus'
-  app_id_suffix = 'Plus'
-  nautilus_bin = 'nautilus-plus'
 endif
 
 application_id = 'org.gnome.Nautilus' + app_id_suffix
@@ -229,10 +225,6 @@ subdirs = [
   'po',
   'src',
 ]
-
-if profile == 'Plus'
-  subdirs += 'plus'
-endif
 
 ########################
 # Conditional building #
