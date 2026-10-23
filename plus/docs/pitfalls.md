@@ -52,6 +52,25 @@
 
 - **现象**:加了「描述」列后,它被推到很右边,拖动也缩不回来
 - **原因**:`src/nautilus-list-view.c` 对所有列 `set_expand(FALSE)`,只给 `name` 列 `set_expand(TRUE)`;多出来的宽度全进名称列。`Nautilus.Column` 只有 name/attribute/label/description/xalign/sort-order/visible,没有宽度或 expand
-- **处理**:插件在进程内遍历 `Gtk.Window.get_toplevels()`,找到 `Gtk.ColumnView`,把名称列 `expand=FALSE` + `fixed-width` 设为内容自然宽度(名称单元格 `measure()` 与第一个列头取大),描述列 `expand=TRUE`。用户拖动过的列不再改写(比较 fixed-width 与上次自己写的值)
-- **注意**:自然宽度必须在控件完成布局后测;太早测会得到 0,此时只切 expand、不写 fixed-width,等下一次刷新再补
-- **调试手法**:无截图工具时,可在插件里用 `Gtk.WidgetPaintable` + `render_texture()` 把窗口直接存成 PNG,便于核对布局
+- **处理**:插件在进程内遍历 `Gtk.Window.get_toplevels()`,找到 `Gtk.ColumnView`,把名称列 `expand=FALSE` + `fixed-width` 设为**当前目录最长文件名**的宽度,描述列 `expand=TRUE`。用户拖动过的列不再改写(比较 fixed-width 与上次自己写的值)
+- **别只测已渲染的行**:只取 `NautilusNameCell.measure()` 会漏掉滚动区外的长文件名,窗口一变窄全变「…」。要遍历视图 model(`TreeListRow.get_item().file.get_name()`)按数据算
+- **别测列头控件本身**:`GtkColumnViewTitle` 的 `measure()` 返回的是**当前列宽**(它被拉伸填满),用它当「标题最小宽度」会自锁——宽度永远停在上一轮的值。要测它内部的 Label
+- **注意**:一行都还没渲染时(开销无从得知)不要写宽度,等下一次刷新再补
+
+## 10. PyGObject 包装对象会被回收重建,weak 容器记状态必然失效
+
+- **现象**:拖动检测、按目录重算、信号挂钩全部静默失效;`WeakKeyDictionary.get(col)` 永远是 `None`
+- **原因**:PyGObject 每次跨语言取对象都新建一个 Python 包装;最后一个 Python 引用消失后包装被回收。`weakref.WeakKeyDictionary` / `WeakSet` 以包装为键,下一轮拿到的是新包装,键对不上
+- **处理**:状态改成「强引用 view → dict」的普通字典,每轮 `_fit_columns` 结束把不在当前窗口里的 view 清掉(连带 `disconnect` 信号)
+- **同类**:`GObject.set_data()` 在 PyGObject 里被禁用(`RuntimeError: Data access methods are unsupported`),不能当对象附加存储用
+
+## 11. GTK CSS 只对真实节点生效,nth-child 依赖可见列
+
+- **现象**:`font-size: smaller` 写了没反应;直接给 `NautilusLabelCell` 加 class 要逐个单元格处理,滚动新建的行还得再处理
+- **处理**:用 `Gtk.CssProvider` + `columnview.<class> row > cell:nth-child(N) label { font-size: 0.85em }`。行里只有**可见列**的单元格,所以 N 是描述列在可见列里的序号;列被拖动排序/隐藏时要重算 N 并换 class
+- **实测**:GTK 4.24 支持 `:nth-child`;`0.85em` 生效,`smaller` 语义不稳定,优先用 em/px
+
+## 调试手法
+
+- 无截图工具时,可在插件里用 `Gtk.WidgetPaintable` + `render_texture()` 把窗口直接存成 PNG
+- 导航到别的目录做自动化验证:`slot.activate_action('slot.open-location', GLib.Variant('s', uri))`,**注意带 `slot.` 前缀**(action group 注册在 `NautilusWindowSlot` 上);`location-open` 之类的名字不存在,调用会静默失败

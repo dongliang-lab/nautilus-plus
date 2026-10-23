@@ -144,6 +144,16 @@ class _ColumnViewColumn:
         self._fixed_width = width
 
 
+class _PangoLayout:
+    """Text measured at a fixed 10px per character, so widths stay readable."""
+
+    def __init__(self, text):
+        self._text = text
+
+    def get_pixel_size(self):
+        return (len(self._text) * 10, 18)
+
+
 class _Widget:
     """Minimal widget: a chain of children plus a measured natural width."""
 
@@ -165,19 +175,140 @@ class _Widget:
         return (self.natural, self.natural, self.natural, self.natural)
 
 
-# The fitting code recognizes widgets by class name (the real ones are C
-# types it cannot import), so the stubs carry the production names.
-NautilusNameCell = type('NautilusNameCell', (_Widget,), {'natural': 0})
-GtkColumnViewTitle = type('GtkColumnViewTitle', (_Widget,), {'natural': 0})
+class _Label(_Widget):
+    """Label stub; its natural width is 10px per character."""
+
+    def __init__(self, text=''):
+        super().__init__()
+        self._text = text
+        self.natural = len(text) * 10
+
+    def get_text(self):
+        return self._text
+
+    def create_pango_layout(self, text=None):
+        return _PangoLayout(self._text if text is None else text)
+
+
+# The fitting code recognizes cells by class name (the real ones are C types
+# it cannot import), so these stubs carry the production names.
+class NautilusNameCell(_Widget):
+    """Name cell stub: an icon plus the file name label."""
+
+    def __init__(self, file_name='', overhead=88):
+        label = _Label(file_name)
+        super().__init__([_Widget(), label])
+        self.natural = overhead + label.natural
+
+
+class NautilusLabelCell(_Widget):
+    """Plain text cell stub (type, size, dates, and our own description)."""
+
+    def __init__(self, text=''):
+        super().__init__([_Label(text)])
+        self.natural = 12 + len(text) * 10
+
+
+class GtkColumnViewTitle(_Widget):
+    def __init__(self, text='', natural=0):
+        super().__init__([_Label(text)])
+        self.natural = natural or len(text) * 10
+
+
+class _File:
+    def __init__(self, name, folder='file:///tmp/demo'):
+        self._name = name
+        self._uri = '%s/%s' % (folder, name)
+
+    def get_name(self):
+        return self._name
+
+    def get_uri(self):
+        return self._uri
+
+
+class _ViewItem:
+    def __init__(self, file):
+        self._file = file
+
+    def get_property(self, name):
+        if name != 'file':
+            raise TypeError('no such property: %s' % name)
+        return self._file
+
+
+class _TreeListRow:
+    def __init__(self, file):
+        self._file = file
+
+    def get_item(self):
+        return _ViewItem(self._file)
+
+
+class _ViewRowModel:
+    """List-view model: every row wraps a view item carrying the file."""
+
+    def __init__(self, names=(), folder='file:///tmp/demo'):
+        self.folder = folder
+        self.names = list(names)
+        self.handlers = {}
+
+    def get_n_items(self):
+        return len(self.names)
+
+    def get_item(self, index):
+        return _TreeListRow(_File(self.names[index], self.folder))
+
+    def connect(self, signal, callback):
+        self.handlers[signal] = callback
+        return len(self.handlers)
+
+    def set_names(self, names, folder=None):
+        """Swap the folder contents, as entering another folder does."""
+        self.names = list(names)
+        if folder is not None:
+            self.folder = folder
+        callback = self.handlers.get('items-changed')
+        if callback is not None:
+            callback(self, 0, 0, len(self.names))
 
 
 class _ColumnView(_Widget):
-    def __init__(self, columns, children=()):
+    def __init__(self, columns, children=(), model=None, width=1000):
         super().__init__(children)
         self._columns = list(columns)
+        self._model = model
+        self._width = width
+        self._css = set()
+        self.handlers = {}
 
     def get_columns(self):
         return self._columns
+
+    def get_model(self):
+        return self._model
+
+    def set_model(self, model):
+        self._model = model
+        callback = self.handlers.get('notify::model')
+        if callback is not None:
+            callback(self, None)
+
+    def get_width(self):
+        return self._width
+
+    def connect(self, signal, callback):
+        self.handlers[signal] = callback
+        return len(self.handlers)
+
+    def add_css_class(self, name):
+        self._css.add(name)
+
+    def remove_css_class(self, name):
+        self._css.discard(name)
+
+    def has_css_class(self, name):
+        return name in self._css
 
 
 class _ListModel:
@@ -201,16 +332,42 @@ class _Toplevel(_Widget):
         return _ListModel(cls.toplevels)
 
 
+class _CssProvider:
+    def __init__(self):
+        self.text = ''
+
+    def load_from_string(self, text):
+        self.text = text
+
+
+class _StyleContext:
+    added = []
+
+    @classmethod
+    def add_provider_for_display(cls, display, provider, priority):
+        cls.added.append(provider)
+
+
 class _Gtk:
     Orientation = types.SimpleNamespace(VERTICAL=1, HORIZONTAL=2)
     Align = types.SimpleNamespace(END=1)
     ColumnView = _ColumnView
     Window = _Toplevel
-    Orientation = types.SimpleNamespace(VERTICAL=1, HORIZONTAL=2)
+    Label = _Label
+    CssProvider = _CssProvider
+    StyleContext = _StyleContext
+    STYLE_PROVIDER_PRIORITY_APPLICATION = 600
+
+
+class _Display:
+    @classmethod
+    def get_default(cls):
+        return cls()
 
 
 class _Gdk:
     KEY_Escape = 65307
+    Display = _Display
 
 
 def _load_extension():
@@ -414,6 +571,8 @@ class MenuFilterTests(unittest.TestCase):
 
 
 class ColumnsTests(unittest.TestCase):
+    """The description column is placed right after a fitted name column."""
+
     def test_one_column_fed_by_the_desc_attribute(self):
         columns = nautilus_meta.FolderMetaColumns().get_columns()
         self.assertEqual(len(columns), 1)
@@ -421,49 +580,81 @@ class ColumnsTests(unittest.TestCase):
         self.assertEqual(columns[0].kwargs['label'], '描述')
         self.assertEqual(columns[0].kwargs['name'], nautilus_meta.DESC_COLUMN)
 
+    def setUp(self):
+        _Toplevel.toplevels = []
+        _StyleContext.added = []
+        nautilus_meta._view_states.clear()
+        nautilus_meta._desc_css_added = False
+
     def tearDown(self):
         _Toplevel.toplevels = []
-        nautilus_meta._name_widths.clear()
-        nautilus_meta._user_widths.clear()
 
-    def _view(self, desc_visible=True, name_natural=240, title_natural=30):
+    def _view(self, desc_visible=True, names=('agent-home', 'AGENTS.md'),
+              overhead=88, width=1000, title='名称'):
+        """A list view holding a name cell and a description cell per row."""
         name = _ColumnViewColumn('name')
         name.set_expand(True)  # what nautilus itself sets up
         desc = _ColumnViewColumn(nautilus_meta.DESC_COLUMN,
                                  visible=desc_visible)
         size = _ColumnViewColumn('size')
-        cells = [NautilusNameCell() for _ in range(3)]
-        for cell in cells:
-            cell.natural = name_natural
-        title = GtkColumnViewTitle()
-        title.natural = title_natural
-        body = _Widget(cells)
-        view = _ColumnView([name, desc, size], children=[title, body])
+        rows = []
+        for file_name in names:
+            rows.append(_Widget([NautilusNameCell(file_name, overhead),
+                                 NautilusLabelCell('一段描述')]))
+        body = _Widget(rows)
+        view = _ColumnView([name, desc, size],
+                           children=[GtkColumnViewTitle(title), body],
+                           model=_ViewRowModel(names), width=width)
         _Toplevel.toplevels = [_Toplevel([view])]
-        return name, desc, size
+        return name, desc, size, view
 
-    def test_desc_visible_sizes_name_to_its_content(self):
-        name, desc, size = self._view()
+    def test_desc_visible_sizes_name_to_the_longest_file_name(self):
+        name, desc, size, _view = self._view()
         nautilus_meta._fit_columns()
         self.assertFalse(name.get_expand())
         self.assertTrue(desc.get_expand())
         self.assertFalse(size.get_expand())
-        self.assertEqual(name.get_fixed_width(), 240)
+        # overhead 88 + 'agent-home' (10 chars x 10px) = 188
+        self.assertEqual(name.get_fixed_width(), 188)
+
+    def test_names_outside_the_rendered_rows_count(self):
+        # Only two rows are laid out, but the folder holds a longer name.
+        _name, _desc, _size, view = self._view(names=('a', 'bb'))
+        view.get_model().set_names(['a', 'bb', 'a-very-long-file-name'])
+        nautilus_meta._fit_columns()
+        # 'a-very-long-file-name' is 21 characters.
+        self.assertEqual(_name.get_fixed_width(), 88 + 210)
+
+    def test_long_names_are_capped_to_a_share_of_the_view(self):
+        _name, _desc, _size, _view = self._view(
+            names=('x' * 100,), width=1000)
+        nautilus_meta._fit_columns()
+        self.assertEqual(_name.get_fixed_width(),
+                         int(1000 * nautilus_meta.NAME_SHARE))
 
     def test_name_width_never_below_the_header(self):
-        name, _desc, _size = self._view(name_natural=10, title_natural=90)
+        name, _desc, _size, _view = self._view(names=('a',), title='名称' * 20)
         nautilus_meta._fit_columns()
-        self.assertEqual(name.get_fixed_width(), 90)
+        self.assertEqual(name.get_fixed_width(), 400)
+
+    def test_no_laid_out_row_means_no_width_yet(self):
+        # Nothing realized: measuring now would ellipsize every name.
+        name, desc, _size, _view = self._view()
+        _Toplevel.toplevels[0]._children[0]._children[1]._children = []
+        nautilus_meta._fit_columns()
+        self.assertFalse(name.get_expand())
+        self.assertTrue(desc.get_expand())
+        self.assertEqual(name.get_fixed_width(), -1)
 
     def test_desc_hidden_restores_nautilus_layout(self):
-        name, desc, _size = self._view(desc_visible=False)
+        name, desc, _size, _view = self._view(desc_visible=False)
         nautilus_meta._fit_columns()
         self.assertTrue(name.get_expand())
         self.assertFalse(desc.get_expand())
         self.assertEqual(name.get_fixed_width(), -1)
 
     def test_hiding_the_desc_column_later_restores_name_expand(self):
-        name, desc, _size = self._view()
+        name, desc, _size, _view = self._view()
         nautilus_meta._fit_columns()
         self.assertFalse(name.get_expand())
         desc.set_visible(False)
@@ -472,16 +663,52 @@ class ColumnsTests(unittest.TestCase):
         self.assertEqual(name.get_fixed_width(), -1)
 
     def test_hand_dragged_width_is_kept(self):
-        name, _desc, _size = self._view()
+        name, _desc, _size, _view = self._view()
         nautilus_meta._fit_columns()
         name.set_fixed_width(500)  # user drags the divider
         nautilus_meta._fit_columns()
         self.assertEqual(name.get_fixed_width(), 500)
-        # A later refresh keeps respecting it, even with longer names.
-        for cell in _Toplevel.toplevels[0]._children[0]._children[1]._children:
-            cell.natural = 700
+
+    def test_dragged_width_is_dropped_when_the_folder_changes(self):
+        name, _desc, _size, view = self._view()
+        nautilus_meta._fit_columns()
+        name.set_fixed_width(500)
         nautilus_meta._fit_columns()
         self.assertEqual(name.get_fixed_width(), 500)
+        # Enter another folder: its own longest name decides again.
+        view.get_model().set_names(['another-folder'], 'file:///tmp/other')
+        nautilus_meta._fit_columns()
+        self.assertEqual(name.get_fixed_width(), 88 + 140)
+
+    def test_bookkeeping_outlives_the_local_view_reference(self):
+        # PyGObject drops its wrapper once the last Python reference goes, so
+        # state kept in a weak container would be gone by the next pass. The
+        # bookkeeping holds the view strongly, so the same wrapper comes back.
+        name, _desc, _size, view = self._view()
+        nautilus_meta._fit_columns()
+        name.set_fixed_width(420)  # the user drags the divider
+        del view
+        again = nautilus_meta._column_views(_Toplevel.toplevels[0])[0]
+        self.assertIn(again, nautilus_meta._view_states)
+        nautilus_meta._fit_columns()
+        self.assertEqual(name.get_fixed_width(), 420)
+
+    def test_closed_window_forgets_its_view(self):
+        self._view()
+        nautilus_meta._fit_columns()
+        self.assertEqual(len(nautilus_meta._view_states), 1)
+        _Toplevel.toplevels = []
+        nautilus_meta._fit_columns()
+        self.assertEqual(nautilus_meta._view_states, {})
+
+    def test_entering_a_folder_reschedules_a_fit(self):
+        _GLib.idle_queue.clear()
+        _name, _desc, _size, view = self._view()
+        nautilus_meta._fit_scheduled = False
+        nautilus_meta._fit_columns()  # hooks the model
+        _GLib.idle_queue.clear()
+        view.get_model().set_names(['x'], 'file:///tmp/other')
+        self.assertEqual(len(_GLib.idle_queue), 1)
 
     def test_view_without_our_column_is_untouched(self):
         name = _ColumnViewColumn('name')
@@ -496,15 +723,14 @@ class ColumnsTests(unittest.TestCase):
         name = _ColumnViewColumn('name')
         name.set_expand(True)
         desc = _ColumnViewColumn(nautilus_meta.DESC_COLUMN)
-        title = GtkColumnViewTitle()
-        title.natural = 40
-        view = _ColumnView([name, desc], children=[title])
-        inner = _Widget([view])
-        _Toplevel.toplevels = [_Toplevel([_Widget([inner])])]
+        body = _Widget([_Widget([NautilusNameCell('abc')])])
+        view = _ColumnView([name, desc], children=[body],
+                           model=_ViewRowModel(['abc']))
+        _Toplevel.toplevels = [_Toplevel([_Widget([view])])]
         nautilus_meta._fit_columns()
         self.assertFalse(name.get_expand())
         self.assertTrue(desc.get_expand())
-        self.assertEqual(name.get_fixed_width(), 40)
+        self.assertEqual(name.get_fixed_width(), 88 + 30)
 
     def test_missing_columns_never_raises(self):
         class Boom:
@@ -516,7 +742,7 @@ class ColumnsTests(unittest.TestCase):
 
     def test_schedule_fits_once_per_idle_pass(self):
         _GLib.idle_queue.clear()
-        name, desc, _size = self._view()
+        name, desc, _size, _view = self._view()
         nautilus_meta._fit_scheduled = False
         nautilus_meta._schedule_fit()
         nautilus_meta._schedule_fit()
@@ -528,6 +754,64 @@ class ColumnsTests(unittest.TestCase):
         # A later refresh schedules again.
         nautilus_meta._schedule_fit()
         self.assertEqual(len(_GLib.idle_queue), 1)
+
+
+class DescFontTests(unittest.TestCase):
+    """The description column renders smaller, without touching other columns."""
+
+    def setUp(self):
+        _Toplevel.toplevels = []
+        _StyleContext.added = []
+        nautilus_meta._view_states.clear()
+        nautilus_meta._desc_css_added = False
+
+    def _view(self, desc_visible=True):
+        columns = [_ColumnViewColumn('name'),
+                   _ColumnViewColumn(nautilus_meta.DESC_COLUMN,
+                                     visible=desc_visible),
+                   _ColumnViewColumn('size')]
+        rows = [_Widget([NautilusNameCell('abc'), NautilusLabelCell('desc')])]
+        view = _ColumnView(columns, children=[_Widget(rows)],
+                           model=_ViewRowModel(['abc']))
+        _Toplevel.toplevels = [_Toplevel([view])]
+        return view
+
+    def test_css_rules_target_each_visible_position(self):
+        self._view()
+        nautilus_meta._fit_columns()
+        self.assertEqual(len(_StyleContext.added), 1)
+        text = _StyleContext.added[0].text
+        self.assertIn('nth-child(2)', text)
+        self.assertIn(nautilus_meta.DESC_FONT_SCALE, text)
+        self.assertIn('row > cell', text)
+
+    def test_css_is_installed_once(self):
+        self._view()
+        nautilus_meta._fit_columns()
+        nautilus_meta._fit_columns()
+        self.assertEqual(len(_StyleContext.added), 1)
+
+    def test_view_gets_the_class_for_the_desc_position(self):
+        view = self._view()
+        nautilus_meta._fit_columns()
+        self.assertTrue(view.has_css_class('folder-meta-desc-2'))
+
+    def test_class_follows_a_reordered_column(self):
+        view = self._view()
+        nautilus_meta._fit_columns()
+        # Move the description in front of the name column.
+        columns = view.get_columns()
+        desc = columns.pop(1)
+        columns.insert(0, desc)
+        nautilus_meta._fit_columns()
+        self.assertTrue(view.has_css_class('folder-meta-desc-1'))
+        self.assertFalse(view.has_css_class('folder-meta-desc-2'))
+
+    def test_hidden_desc_column_removes_the_class(self):
+        view = self._view(desc_visible=False)
+        nautilus_meta._fit_columns()
+        self.assertFalse(view.has_css_class('folder-meta-desc-2'))
+        self.assertFalse(view.has_css_class('folder-meta-desc-1'))
 
 
 class FileDescYamlTests(unittest.TestCase):

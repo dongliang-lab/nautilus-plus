@@ -28,7 +28,6 @@ import re
 import stat
 import tempfile
 import traceback
-import weakref
 
 import yaml
 
@@ -845,24 +844,50 @@ def _refresh_folder(folder):
 # right and cannot be pulled in. Nautilus.Column has no width/expand property,
 # so this is fixed in-process on the GTK widgets:
 #
-#   desc column visible  -> name column gets the width its contents need (the
-#                           longest file name, measured from the name cells),
+#   desc column visible  -> name column is sized to the longest file name of
+#                           the current folder (read from the view's model, so
+#                           rows that were never scrolled into view count too),
 #                           and the description column expands into the rest
 #   desc column hidden   -> nautilus's own layout is restored
 #
-# The name width is only written while the user has not dragged the column:
-# once its fixed width differs from the one we last applied, the user is in
-# charge and the column is left alone.
+# The name width is only written while the user has not dragged the column;
+# dragging wins until the folder changes.
 
-# GtkColumnViewColumn -> fixed width we last set on it
-_name_widths = weakref.WeakKeyDictionary()
-# name columns the user has resized by hand; their width is then never touched
-_user_widths = weakref.WeakSet()
+# Largest share of the view the name column may take, so one absurd file name
+# cannot squeeze the description out.
+NAME_SHARE = 0.5
+# List-view description text, relative to the row font.
+DESC_FONT_SCALE = '0.85em'
+
+# Gtk.ColumnView -> per-view bookkeeping. The keys are held strongly on
+# purpose: PyGObject throws its wrapper away as soon as the last Python
+# reference goes, so a weak key never matches on the next pass. Views that no
+# longer exist are dropped at the end of every pass.
+_view_states = {}
+_desc_css_added = False
 _fit_scheduled = False
 
 
+def _state_for(view):
+    """Bookkeeping for one list view, created on first sight."""
+    state = _view_states.get(view)
+    if state is None:
+        state = {
+            'applied': None,     # fixed width we last wrote on the name column
+            'user': False,       # the user dragged the name column
+            'folder': None,      # folder the width was computed for
+            'desc_class': None,  # css class currently carried by the view
+            'model': None,       # model whose items-changed we listen to
+            'handler': None,     # that handler's id
+            'hooked': False,     # notify::model already connected
+            'cache': None,       # (n_items, folder, {name: width})
+        }
+        _view_states[view] = state
+    return state
+
+
 def _column_views(widget):
-    """Every GtkColumnView below `widget`, depth first."""
+    """Every Gtk.ColumnView below `widget`, depth first."""
     found = []
     child = widget.get_first_child()
     while child is not None:
@@ -882,37 +907,261 @@ def _walk_in_order(widget, visit):
         child = child.get_next_sibling()
 
 
-def _natural_name_width(view):
-    """Width the name column needs so no file name is ellipsized.
+def _first_label(widget):
+    """First non-empty Gtk.Label at or below `widget`, or None."""
+    found = []
 
-    Name cells are laid out in the body rows; the header label is a lower
-    bound that still works while no row is realized yet.
+    def visit(node):
+        if found:
+            return
+        if isinstance(node, Gtk.Label) and node.get_text():
+            found.append(node)
+
+    _walk_in_order(widget, visit)
+    return found[0] if found else None
+
+
+def _file_of(model, index):
+    """NautilusFile behind one model row, or None."""
+    try:
+        row = model.get_item(index)
+    except Exception:
+        return None
+    if row is None:
+        return None
+    try:
+        # List view wraps items in a GtkTreeListRow (rows expand into trees).
+        item = row.get_item() if hasattr(row, 'get_item') else row
+    except Exception:
+        item = row
+    try:
+        return item.get_property('file')
+    except Exception:
+        return None
+
+
+def _folder_key(model):
+    """Parent URI of the first row; None for an empty model."""
+    if model is None:
+        return None
+    try:
+        if model.get_n_items() == 0:
+            return None
+        file = _file_of(model, 0)
+        if file is None:
+            return None
+        uri = file.get_uri()
+    except Exception:
+        return None
+    return uri.rsplit('/', 1)[0] if '/' in uri else uri
+
+
+def _name_widths_in(state, model, font_label):
+    """{file name: pixel width} for every row, cached per model snapshot."""
+    try:
+        count = model.get_n_items()
+    except Exception:
+        return {}
+    key = _folder_key(model)
+    cached = state['cache']
+    if cached is not None and cached[0] == count and cached[1] == key:
+        return cached[2]
+
+    widths = {}
+    for index in range(count):
+        file = _file_of(model, index)
+        if file is None:
+            continue
+        try:
+            name = file.get_name()
+        except Exception:
+            continue
+        if not name:
+            continue
+        try:
+            # Same font as nautilus uses for names: measure with a real one.
+            widths[name] = font_label.create_pango_layout(name).get_pixel_size()[0]
+        except Exception:
+            continue
+    state['cache'] = (count, key, widths)
+    return widths
+
+
+def _name_cell_metrics(view):
+    """(overhead, font label) from one realized name cell, or (None, None).
+
+    overhead = cell width minus its file-name label: icon, spacing and padding,
+    everything the column needs on top of the text itself.
     """
-    widest = 0
+    cells = []
+
+    def visit(widget):
+        if type(widget).__name__ == 'NautilusNameCell':
+            cells.append(widget)
+
+    _walk_in_order(view, visit)
+    for cell in cells:
+        label = _first_label(cell)
+        if label is None:
+            continue
+        try:
+            cell_width = cell.measure(Gtk.Orientation.HORIZONTAL, -1)[1]
+            label_width = label.measure(Gtk.Orientation.HORIZONTAL, -1)[1]
+        except Exception:
+            continue
+        if cell_width <= 0:
+            continue
+        return max(0, cell_width - label_width), label
+    return None, None
+
+
+def _header_width(view):
+    """Width of the first column header's text (the name column's title).
+
+    The title widget itself is as wide as the column, so measuring it would
+    feed the current width back in; the label inside it is what matters.
+    """
     titles = []
 
     def visit(widget):
-        nonlocal widest
-        kind = type(widget).__name__
-        if kind == 'NautilusNameCell':
-            widest = max(widest, widget.measure(Gtk.Orientation.HORIZONTAL, -1)[1])
-        elif kind == 'GtkColumnViewTitle':
+        if type(widget).__name__ == 'GtkColumnViewTitle':
             titles.append(widget)
 
     _walk_in_order(view, visit)
-    if titles:
-        # Titles sit in column order; the first one belongs to the name column.
-        # The header must stay readable even when every file name is shorter.
-        widest = max(widest,
-                     titles[0].measure(Gtk.Orientation.HORIZONTAL, -1)[1])
-    return widest
+    if not titles:
+        return 0
+    label = _first_label(titles[0])
+    if label is None:
+        return 0
+    try:
+        return label.measure(Gtk.Orientation.HORIZONTAL, -1)[1]
+    except Exception:
+        return 0
+
+
+def _name_column_width(view):
+    """Width the name column needs for this folder, or None while unknown."""
+    overhead, font_label = _name_cell_metrics(view)
+    if overhead is None:
+        # Nothing laid out yet: measuring now would truncate every name.
+        return None
+    model = view.get_model()
+    widths = (_name_widths_in(_state_for(view), model, font_label)
+              if model is not None else {})
+    needed = overhead + max(widths.values() or [0])
+    needed = max(needed, _header_width(view))
+    try:
+        view_width = view.get_width()
+    except Exception:
+        view_width = 0
+    if view_width > 0:
+        needed = min(needed, max(120, int(view_width * NAME_SHARE)))
+    return needed
+
+
+def _visible_index(columns, column):
+    """1-based position of `column` among the visible ones, 0 if not found."""
+    position = 0
+    for candidate in columns:
+        if not candidate.get_visible():
+            continue
+        position += 1
+        if candidate is column:
+            return position
+    return 0
+
+
+def _desc_css():
+    """Smaller font for the description column, one rule per visible position.
+
+    Rows only hold cells for visible columns, so the column's position among
+    the visible ones is its :nth-child. Rules are pre-generated because the
+    position changes when the user reorders or hides columns.
+    """
+    global _desc_css_added
+    if _desc_css_added:
+        return
+    _desc_css_added = True
+    rules = []
+    for index in range(1, 17):
+        rules.append(
+            'columnview.folder-meta-desc-%d row > cell:nth-child(%d) label'
+            ' { font-size: %s; }' % (index, index, DESC_FONT_SCALE))
+    try:
+        provider = Gtk.CssProvider()
+        provider.load_from_string('\n'.join(rules))
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(), provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+    except Exception:
+        # Older GTK or no display: the text simply keeps the default size.
+        pass
+
+
+def _set_desc_class(view, index):
+    """Mark the view so the description cell at `index` renders smaller."""
+    state = _state_for(view)
+    wanted = 'folder-meta-desc-%d' % index if index else None
+    applied = state['desc_class']
+    if applied == wanted:
+        return
+    if applied is not None:
+        try:
+            view.remove_css_class(applied)
+        except Exception:
+            pass
+    if wanted is not None:
+        try:
+            view.add_css_class(wanted)
+        except Exception:
+            pass
+    state['desc_class'] = wanted
+
+
+def _hook_view(view):
+    """Watch this view's model so entering a folder re-measures the names."""
+    state = _state_for(view)
+    if not state['hooked']:
+        state['hooked'] = True
+        try:
+            view.connect('notify::model', _on_model_changed)
+        except Exception:
+            pass
+    try:
+        model = view.get_model()
+    except Exception:
+        return
+    if model is None or state['model'] is model:
+        return
+    old_model = state['model']
+    if old_model is not None and state['handler'] is not None:
+        try:
+            old_model.disconnect(state['handler'])
+        except Exception:
+            pass
+    state['model'] = model
+    state['handler'] = None
+    try:
+        state['handler'] = model.connect('items-changed', _on_items_changed)
+    except Exception:
+        pass
+
+
+def _on_model_changed(_view, _pspec):
+    _schedule_fit()
+
+
+def _on_items_changed(_model, _position, _removed, _added):
+    _schedule_fit()
 
 
 def _fit_one(view):
     """Place the description column right after the name. Never raises."""
     name_column = None
     desc_column = None
+    columns = []
     for column in view.get_columns():
+        columns.append(column)
         column_id = column.get_id()
         if column_id == 'name':
             name_column = column
@@ -922,35 +1171,62 @@ def _fit_one(view):
     if name_column is None or desc_column is None:
         return
 
+    state = _state_for(view)
+
     if not desc_column.get_visible():
         # Hidden description: hand the width back to the name column, exactly
         # as nautilus set it up, and forget any hand-made width.
-        _name_widths.pop(name_column, None)
-        _user_widths.discard(name_column)
+        state['applied'] = None
+        state['user'] = False
+        _set_desc_class(view, 0)
         if not name_column.get_expand():
             name_column.set_fixed_width(-1)
             name_column.set_expand(True)
         return
 
-    if name_column not in _user_widths:
-        natural = _natural_name_width(view)
-        applied = _name_widths.get(name_column)
+    # A different folder: whatever the user dragged last time no longer applies.
+    key = _folder_key(view.get_model())
+    if key is not None and state['folder'] != key:
+        state['folder'] = key
+        state['user'] = False
+        state['applied'] = None
+
+    if not state['user']:
+        needed = _name_column_width(view)
+        applied = state['applied']
         current = name_column.get_fixed_width()
         if applied is not None and current != applied:
             # The width changed behind our back: the user dragged it.
-            _user_widths.add(name_column)
-        elif natural > 0 and current != natural:
-            name_column.set_fixed_width(natural)
-            _name_widths[name_column] = natural
+            state['user'] = True
+        elif needed is not None and current != needed:
+            name_column.set_fixed_width(needed)
+            state['applied'] = needed
 
     if not desc_column.get_expand():
         desc_column.set_expand(True)
     if name_column.get_expand():
         name_column.set_expand(False)
 
+    _set_desc_class(view, _visible_index(columns, desc_column))
+
+
+def _forget_view(view):
+    """Drop bookkeeping for a view that is gone (window closed)."""
+    state = _view_states.pop(view, None)
+    if state is None:
+        return
+    model = state['model']
+    if model is not None and state['handler'] is not None:
+        try:
+            model.disconnect(state['handler'])
+        except Exception:
+            pass
+
 
 def _fit_columns():
     """Re-balance column widths in every open window. Never raises."""
+    _desc_css()
+    seen = set()
     try:
         toplevels = Gtk.Window.get_toplevels()
         for index in range(toplevels.get_n_items()):
@@ -958,7 +1234,9 @@ def _fit_columns():
             if window is None:
                 continue
             for view in _column_views(window):
+                seen.add(view)
                 try:
+                    _hook_view(view)
                     _fit_one(view)
                 except Exception:
                     # One odd view must not stop the others.
@@ -967,6 +1245,8 @@ def _fit_columns():
         # Nautilus internals changed, or a window went away mid-walk: the
         # columns simply stay as nautilus made them.
         pass
+    for view in [v for v in _view_states if v not in seen]:
+        _forget_view(view)
 
 
 def _schedule_fit():

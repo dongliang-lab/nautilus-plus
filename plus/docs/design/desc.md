@@ -40,11 +40,17 @@ MenuProvider.get_background_items(右键空白处)
 
 - `FolderMetaColumns(Nautilus.ColumnProvider)` 注册列 `FolderMeta::Desc`,属性 `desc`
 - **列宽**:nautilus 让名称列 `expand=TRUE`、其余列 `expand=FALSE`(`src/nautilus-list-view.c`),描述列因此被推到最右且拖不窄。`Nautilus.Column` 没有宽度/expand 属性,所以在进程内改 GTK 控件:
-  - 描述列可见时:名称列 `expand=FALSE` 并 `fixed-width` = 内容自然宽度(取名称单元格与列头中较宽者);描述列 `expand=TRUE` 吃掉剩余空间
+  - 描述列可见时:名称列 `expand=FALSE` 并 `fixed-width` = **当前目录最长文件名**的宽度;描述列 `expand=TRUE` 吃掉剩余空间
+  - 宽度按**数据**算,不按已渲染的行算:遍历视图 model 的每一行(`TreeListRow.get_item().file.get_name()`),滚动区外的长名字也计入;文字宽度用真实文件名 Label 的 `create_pango_layout()`,与 nautilus 字体一致
+  - 名称列的固定开销(图标、间距、padding)= 某个已渲染名称单元格宽 − 其中文件名 Label 宽
+  - 上限为视图宽度的 `NAME_SHARE`(0.5):超长文件名被省略号截断,不会把描述挤没
+  - 一行都还没渲染时不写宽度(此时测会得到 0,导致全变「…」),等下一次刷新再补
   - 描述列隐藏时:恢复 nautilus 原样(名称列 `expand=TRUE`、`fixed-width=-1`)
-  - 用户手动拖动过名称列后不再改写它的宽度(记住最后一次自己设的值,发现被改过就认作拖动)
-  - 触发点:`InfoProvider.update_file_info` 末尾 `GLib.idle_add` 合并调度,每次进目录/刷新都会校正一次
+  - 用户拖动过名称列后不再改写;**换目录时拖动结果作废**,按新目录重新定宽
+  - 触发:视图 model 的 `notify::model` / `items-changed` 挂钩,加上 `update_file_info` 末尾的 `GLib.idle_add` 兜底
+  - 状态用「强引用 view → dict」保存并按轮次清理:PyGObject 的包装对象在最后一个 Python 引用消失后会被丢弃,用 `WeakKeyDictionary` 记状态会永远对不上
   - 失败静默:找不到控件或上游结构变化时退化为原样,不报错
+- **字号**:描述列文字用 `0.85em`(`DESC_FONT_SCALE`),通过一个 `Gtk.CssProvider` 里的 `columnview.folder-meta-desc-N row > cell:nth-child(N) label` 规则实现;N = 描述列在**可见列**中的序号,视图挂对应的 css class。行里只有可见列的单元格,所以 nth-child 对得上;滚动新建的行自动生效
 
 ## 已知边界
 

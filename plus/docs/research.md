@@ -20,6 +20,10 @@
 4. **属性无 remove 的清理**:`add_string_attribute(attr, '')` 置空串清掉显示(扩展属性 API 只有 add)
 5. **列表视图自定义列**:`Nautilus.ColumnProvider.get_columns()` 返回 `Nautilus.Column(name, attribute, label, description)`,列表视图右键列头即可勾选。上游 `src/nautilus-column-utilities.c:175` 会收集所有 ColumnProvider
 6. **进程内改列宽/expand**:扩展与 nautilus 同进程同 GTK,插件可遍历 `Gtk.Window.get_toplevels()` 拿到 `Gtk.ColumnView`,对 `GtkColumnViewColumn` 调 `set_expand()` / `set_fixed_width()`;名称单元格是 `NautilusNameCell`(按类名识别),可 `measure()` 出自然宽度。`Nautilus.Column` 本身没有这两个属性
+7. **从视图 model 读全部文件名**:`view.get_model()` 是 `NautilusViewModel`,每行 `GtkTreeListRow` → `get_item()` → `NautilusViewItem` → `get_property('file')` → `NautilusVFSFile.get_name()`。不依赖哪些行已渲染,滚动区外的名字也能拿到(实测确认)
+8. **文字宽度与 nautilus 完全一致**:任一 `Gtk.Label` 的 `create_pango_layout(text).get_pixel_size()` 即可,不必自己拼 Pango
+9. **GTK CSS 按列位置改样式**:GTK 4.24 支持 `:nth-child()`;列表行里只有可见列的单元格,故「描述列在可见列中的序号」= 其 cell 的 nth-child。配合 `Gtk.CssProvider` + `StyleContext.add_provider_for_display` 可只给描述列改字号
+10. **槽位导航(自动化验证用)**:`NautilusWindowSlot` 上的 action group 前缀是 `slot`,`slot.open-location` 接受 URI 字符串。`location-open`、`open-location`(不带前缀)都不存在
 
 ## 已验证的死路(不要重复尝试)
 
