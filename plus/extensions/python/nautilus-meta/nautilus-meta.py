@@ -858,6 +858,10 @@ def _refresh_folder(folder):
 NAME_SHARE = 0.5
 # List-view description text, relative to the row font.
 DESC_FONT_SCALE = '0.85em'
+# Nautilus writes the chosen view here every time the user switches, which is
+# the only reliable signal that a new list view was built (see _watch_view_mode).
+VIEW_MODE_SCHEMA = 'org.gnome.nautilus.preferences'
+VIEW_MODE_KEY = 'default-folder-viewer'
 
 # Gtk.ColumnView -> per-view bookkeeping. The keys are held strongly on
 # purpose: PyGObject throws its wrapper away as soon as the last Python
@@ -865,6 +869,8 @@ DESC_FONT_SCALE = '0.85em'
 # longer exist are dropped at the end of every pass.
 _view_states = {}
 _desc_css_added = False
+_view_mode_watched = False
+_view_mode_settings = None
 _fit_scheduled = False
 
 
@@ -1226,6 +1232,7 @@ def _forget_view(view):
 def _fit_columns():
     """Re-balance column widths in every open window. Never raises."""
     _desc_css()
+    _watch_view_mode()
     seen = set()
     try:
         toplevels = Gtk.Window.get_toplevels()
@@ -1263,6 +1270,46 @@ def _schedule_fit():
         return False
 
     GLib.idle_add(run)
+
+
+def _on_view_mode_changed(_settings, _key):
+    """The user switched icon <-> list view: a brand new list view exists.
+
+    Switching calls no provider on the files already loaded, so nothing else
+    would measure the fresh columns. The view is still being laid out when
+    the preference changes, though, so the first pass finds no rows; a
+    second one follows shortly after to pick the width up.
+    """
+    _schedule_fit()
+
+    def again():
+        _schedule_fit()
+        return False
+
+    try:
+        GLib.timeout_add(250, again)
+    except Exception:
+        pass
+
+
+def _watch_view_mode():
+    """Re-fit when the window switches between icon and list view.
+
+    The GSettings object is held at module level on purpose: PyGObject drops
+    its wrapper (and with it the signal connection) once the last Python
+    reference goes.
+    """
+    global _view_mode_watched, _view_mode_settings
+    if _view_mode_watched:
+        return
+    _view_mode_watched = True
+    try:
+        _view_mode_settings = Gio.Settings.new(VIEW_MODE_SCHEMA)
+        _view_mode_settings.connect('changed::' + VIEW_MODE_KEY,
+                                    _on_view_mode_changed)
+    except Exception:
+        # Schema missing (unusual nautilus build): other triggers still run.
+        _view_mode_settings = None
 
 
 def _active_window():

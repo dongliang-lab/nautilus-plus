@@ -9,12 +9,40 @@ from urllib.parse import unquote, urlparse
 
 
 class _Settings:
+    instances = []
+
     def __init__(self):
         self.values = {'captions': []}
+        self.handlers = {}
 
     @classmethod
     def new(cls, schema):
-        return cls()
+        instance = cls()
+        instance.schema = schema
+        cls.instances.append(instance)
+        return instance
+
+    @classmethod
+    def for_schema(cls, schema):
+        """The instance the extension itself created for this schema."""
+        for instance in reversed(cls.instances):
+            if instance.schema == schema:
+                return instance
+        return None
+
+    @classmethod
+    def forget(cls):
+        cls.instances = []
+
+    def connect(self, signal, callback):
+        self.handlers[signal] = callback
+        return len(self.handlers)
+
+    def emit(self, signal):
+        """Pretend the user changed a preference."""
+        callback = self.handlers.get(signal)
+        if callback is not None:
+            callback(self, signal.split('::')[-1])
 
     def get_strv(self, key):
         return list(self.values.get(key, []))
@@ -91,6 +119,19 @@ class _GLib:
         pass
 
     idle_queue = []
+    timeout_queue = []
+
+    @classmethod
+    def timeout_add(cls, delay, func, *args):
+        cls.timeout_queue.append((delay, func, args))
+        return len(cls.timeout_queue)
+
+    @classmethod
+    def run_timeouts(cls):
+        """Fire every queued timeout, as the main loop eventually would."""
+        while cls.timeout_queue:
+            _delay, func, args = cls.timeout_queue.pop(0)
+            func(*args)
 
     @classmethod
     def idle_add(cls, func, *args):
@@ -679,6 +720,40 @@ class ColumnsTests(unittest.TestCase):
         view.get_model().set_names(['another-folder'], 'file:///tmp/other')
         nautilus_meta._fit_columns()
         self.assertEqual(name.get_fixed_width(), 88 + 140)
+
+    def test_view_mode_switch_schedules_two_passes(self):
+        # Switching to list view builds a fresh view that is still being laid
+        # out: one pass finds nothing, a delayed second one picks up the width.
+        _GLib.idle_queue.clear()
+        _GLib.timeout_queue.clear()
+        nautilus_meta._view_mode_watched = False
+        nautilus_meta._fit_scheduled = False
+        _name, _desc, _size, _view = self._view()
+        nautilus_meta._fit_columns()  # installs the preference watcher
+        settings = _Settings.for_schema(nautilus_meta.VIEW_MODE_SCHEMA)
+        self.assertIsNotNone(settings)
+        self.assertIn('changed::' + nautilus_meta.VIEW_MODE_KEY,
+                      settings.handlers)
+
+        _GLib.idle_queue.clear()
+        nautilus_meta._on_view_mode_changed(settings, nautilus_meta.VIEW_MODE_KEY)
+        self.assertEqual(len(_GLib.idle_queue), 1)
+        self.assertEqual(len(_GLib.timeout_queue), 1)
+        _GLib.run_idle()
+        _GLib.run_timeouts()
+        self.assertEqual(len(_GLib.idle_queue), 1)  # the delayed second pass
+        _GLib.run_idle()
+
+    def test_view_mode_watcher_is_installed_once(self):
+        _GLib.idle_queue.clear()
+        _GLib.timeout_queue.clear()
+        nautilus_meta._view_mode_watched = False
+        _Settings.forget()
+        _name, _desc, _size, _view = self._view()
+        nautilus_meta._fit_columns()
+        nautilus_meta._fit_columns()
+        settings = _Settings.for_schema(nautilus_meta.VIEW_MODE_SCHEMA)
+        self.assertEqual(len(settings.handlers), 1)
 
     def test_bookkeeping_outlives_the_local_view_reference(self):
         # PyGObject drops its wrapper once the last Python reference goes, so

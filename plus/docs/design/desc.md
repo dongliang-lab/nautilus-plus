@@ -48,6 +48,8 @@ MenuProvider.get_background_items(右键空白处)
   - 描述列隐藏时:恢复 nautilus 原样(名称列 `expand=TRUE`、`fixed-width=-1`)
   - 用户拖动过名称列后不再改写;**换目录时拖动结果作废**,按新目录重新定宽
   - 触发:视图 model 的 `notify::model` / `items-changed` 挂钩,加上 `update_file_info` 末尾的 `GLib.idle_add` 兜底
+  - **图标↔列表切换单独处理**:切换会新建一个 `Gtk.ColumnView`,且不会对已加载的文件重跑 provider,前两类触发都不会发生。监听 gsettings `org.gnome.nautilus.preferences` 的 `default-folder-viewer`(nautilus 每次切换都会写它),切换后调度一次;因切换瞬间视图还在布局,250ms 后再补一次
+  - GSettings 对象必须由模块级变量持有:PyGObject 在最后一个 Python 引用消失时会丢弃包装对象,信号连接随之失效
   - 状态用「强引用 view → dict」保存并按轮次清理:PyGObject 的包装对象在最后一个 Python 引用消失后会被丢弃,用 `WeakKeyDictionary` 记状态会永远对不上
   - 失败静默:找不到控件或上游结构变化时退化为原样,不报错
 - **字号**:描述列文字用 `0.85em`(`DESC_FONT_SCALE`),通过一个 `Gtk.CssProvider` 里的 `columnview.folder-meta-desc-N row > cell:nth-child(N) label` 规则实现;N = 描述列在**可见列**中的序号,视图挂对应的 css class。行里只有可见列的单元格,所以 nth-child 对得上;滚动新建的行自动生效

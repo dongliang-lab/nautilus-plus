@@ -11,7 +11,8 @@
 - 描述列字号改为 `0.85em`(`DESC_FONT_SCALE`),通过 `nth-child` CSS 规则只作用于该列
 - 修复:`WeakKeyDictionary` 记状态在 PyGObject 下必然失效(包装对象被回收重建),改为强引用 + 每轮清理
 - 修复:列头宽度误测了会被拉伸填满的 `GtkColumnViewTitle`,导致宽度自锁
-- 单测 60 → 72
+- 修复:图标↔列表切换不重算(切换新建视图且不重跑 provider),改监听 gsettings `default-folder-viewer`,并在 250ms 后补一次
+- 单测 60 → 74
 
 ## 0.4.1 — 2026-10-24
 

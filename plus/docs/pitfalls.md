@@ -57,14 +57,21 @@
 - **别测列头控件本身**:`GtkColumnViewTitle` 的 `measure()` 返回的是**当前列宽**(它被拉伸填满),用它当「标题最小宽度」会自锁——宽度永远停在上一轮的值。要测它内部的 Label
 - **注意**:一行都还没渲染时(开销无从得知)不要写宽度,等下一次刷新再补
 
-## 10. PyGObject 包装对象会被回收重建,weak 容器记状态必然失效
+## 10. 图标↔列表切换不触发任何 provider
+
+- **现象**:在网格视图里换目录,再切回列表视图,名称列宽度还是上一个目录的
+- **原因**:切换视图会销毁并新建 `Gtk.ColumnView`,但不会对已加载的文件重跑 `InfoProvider`;新视图的 model 也是新的,`notify::model` 在连接之前就已经设好,`items-changed` 同样不保证发生
+- **处理**:监听 gsettings `org.gnome.nautilus.preferences` 的 `default-folder-viewer`——nautilus 每次切换都会写这个键。切换瞬间视图仍在布局(测不到行),所以 250ms 后再补一次
+- **别用**:`Gtk.Window` 上的 `child-added` / `notify::visible-child` 都没触发;`slot.files-view-mode` 是 nautilus 自己的 action,插件侧监听不到
+
+## 11. PyGObject 包装对象会被回收重建,weak 容器记状态必然失效
 
 - **现象**:拖动检测、按目录重算、信号挂钩全部静默失效;`WeakKeyDictionary.get(col)` 永远是 `None`
 - **原因**:PyGObject 每次跨语言取对象都新建一个 Python 包装;最后一个 Python 引用消失后包装被回收。`weakref.WeakKeyDictionary` / `WeakSet` 以包装为键,下一轮拿到的是新包装,键对不上
 - **处理**:状态改成「强引用 view → dict」的普通字典,每轮 `_fit_columns` 结束把不在当前窗口里的 view 清掉(连带 `disconnect` 信号)
 - **同类**:`GObject.set_data()` 在 PyGObject 里被禁用(`RuntimeError: Data access methods are unsupported`),不能当对象附加存储用
 
-## 11. GTK CSS 只对真实节点生效,nth-child 依赖可见列
+## 12. GTK CSS 只对真实节点生效,nth-child 依赖可见列
 
 - **现象**:`font-size: smaller` 写了没反应;直接给 `NautilusLabelCell` 加 class 要逐个单元格处理,滚动新建的行还得再处理
 - **处理**:用 `Gtk.CssProvider` + `columnview.<class> row > cell:nth-child(N) label { font-size: 0.85em }`。行里只有**可见列**的单元格,所以 N 是描述列在可见列里的序号;列被拖动排序/隐藏时要重算 N 并换 class

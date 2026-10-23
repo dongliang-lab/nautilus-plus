@@ -23,7 +23,8 @@
 7. **从视图 model 读全部文件名**:`view.get_model()` 是 `NautilusViewModel`,每行 `GtkTreeListRow` → `get_item()` → `NautilusViewItem` → `get_property('file')` → `NautilusVFSFile.get_name()`。不依赖哪些行已渲染,滚动区外的名字也能拿到(实测确认)
 8. **文字宽度与 nautilus 完全一致**:任一 `Gtk.Label` 的 `create_pango_layout(text).get_pixel_size()` 即可,不必自己拼 Pango
 9. **GTK CSS 按列位置改样式**:GTK 4.24 支持 `:nth-child()`;列表行里只有可见列的单元格,故「描述列在可见列中的序号」= 其 cell 的 nth-child。配合 `Gtk.CssProvider` + `StyleContext.add_provider_for_display` 可只给描述列改字号
-10. **槽位导航(自动化验证用)**:`NautilusWindowSlot` 上的 action group 前缀是 `slot`,`slot.open-location` 接受 URI 字符串。`location-open`、`open-location`(不带前缀)都不存在
+10. **槽位导航(自动化验证用)**:`NautilusWindowSlot` 上的 action group 前缀是 `slot`,`slot.open-location` 接受 URI 字符串。`location-open`、`open-location`(不带前缀)都不存在;`slot.files-view-mode` 接受 `u`(1=列表、2=图标,见 `nautilus-view-info.h`)
+11. **视图模式切换的信号**:gsettings `org.gnome.nautilus.preferences` 的 `default-folder-viewer` 每次切换都会变(`change_files_view_mode` → `g_settings_set_enum`)。控件侧没有可用的信号(`child-added`、`notify::visible-child` 实测都不触发)
 
 ## 已验证的死路(不要重复尝试)
 
