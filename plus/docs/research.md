@@ -19,6 +19,7 @@
 3. **菜单重建触发**:nautilus 的扩展菜单模型只在视图加载时构建一次;对当前文件夹重加扩展属性 → `nautilus_file_changed` → `view_directory_changed_callback`(`nautilus-files-view.c:8578-8584`)→ 调度菜单重建(约 0.5s)。`popup-menu-changed` 信号是死代码,从未被发出
 4. **属性无 remove 的清理**:`add_string_attribute(attr, '')` 置空串清掉显示(扩展属性 API 只有 add)
 5. **列表视图自定义列**:`Nautilus.ColumnProvider.get_columns()` 返回 `Nautilus.Column(name, attribute, label, description)`,列表视图右键列头即可勾选。上游 `src/nautilus-column-utilities.c:175` 会收集所有 ColumnProvider
+6. **进程内改列宽/expand**:扩展与 nautilus 同进程同 GTK,插件可遍历 `Gtk.Window.get_toplevels()` 拿到 `Gtk.ColumnView`,对 `GtkColumnViewColumn` 调 `set_expand()` / `set_fixed_width()`;名称单元格是 `NautilusNameCell`(按类名识别),可 `measure()` 出自然宽度。`Nautilus.Column` 本身没有这两个属性
 
 ## 已验证的死路(不要重复尝试)
 

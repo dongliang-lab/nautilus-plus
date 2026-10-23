@@ -47,3 +47,11 @@
 - **现象**:U 盘(exFAT)、网盘上,文件移动/改名后注释不跟随
 - **原因**:`user.*` 扩展属性需要文件系统支持;不支持时 `os.setxattr` 抛 `OSError`
 - **处理**:写入令牌失败时静默跳过(`_write_token` 吞掉 OSError),退化为"不跟随 + 懒清理",不报错、不留垃圾
+
+## 9. 名称列霸占宽度,扩展 API 改不了列宽
+
+- **现象**:加了「描述」列后,它被推到很右边,拖动也缩不回来
+- **原因**:`src/nautilus-list-view.c` 对所有列 `set_expand(FALSE)`,只给 `name` 列 `set_expand(TRUE)`;多出来的宽度全进名称列。`Nautilus.Column` 只有 name/attribute/label/description/xalign/sort-order/visible,没有宽度或 expand
+- **处理**:插件在进程内遍历 `Gtk.Window.get_toplevels()`,找到 `Gtk.ColumnView`,把名称列 `expand=FALSE` + `fixed-width` 设为内容自然宽度(名称单元格 `measure()` 与第一个列头取大),描述列 `expand=TRUE`。用户拖动过的列不再改写(比较 fixed-width 与上次自己写的值)
+- **注意**:自然宽度必须在控件完成布局后测;太早测会得到 0,此时只切 expand、不写 fixed-width,等下一次刷新再补
+- **调试手法**:无截图工具时,可在插件里用 `Gtk.WidgetPaintable` + `render_texture()` 把窗口直接存成 PNG,便于核对布局

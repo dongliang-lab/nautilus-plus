@@ -90,15 +90,123 @@ class _GLib:
     class Error(Exception):
         pass
 
+    idle_queue = []
+
+    @classmethod
+    def idle_add(cls, func, *args):
+        cls.idle_queue.append((func, args))
+        return len(cls.idle_queue)
+
+    @classmethod
+    def run_idle(cls):
+        """Run queued idle callbacks until the queue is empty."""
+        while cls.idle_queue:
+            func, args = cls.idle_queue.pop(0)
+            func(*args)
+
     @staticmethod
     def filename_from_uri(uri):
         parsed = urlparse(uri)
         return unquote(parsed.path), None
 
 
+class _Column:
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+
+
+class _ColumnViewColumn:
+    def __init__(self, column_id, visible=True):
+        self._id = column_id
+        self._visible = visible
+        self._expand = False
+        self._fixed_width = -1
+
+    def get_id(self):
+        return self._id
+
+    def get_visible(self):
+        return self._visible
+
+    def set_visible(self, visible):
+        self._visible = visible
+
+    def get_expand(self):
+        return self._expand
+
+    def set_expand(self, expand):
+        self._expand = expand
+
+    def get_fixed_width(self):
+        return self._fixed_width
+
+    def set_fixed_width(self, width):
+        self._fixed_width = width
+
+
+class _Widget:
+    """Minimal widget: a chain of children plus a measured natural width."""
+
+    natural = 0
+
+    def __init__(self, children=()):
+        self._children = list(children)
+        for index, child in enumerate(self._children):
+            child._next_sibling = (self._children[index + 1]
+                                   if index + 1 < len(self._children) else None)
+
+    def get_first_child(self):
+        return self._children[0] if self._children else None
+
+    def get_next_sibling(self):
+        return getattr(self, '_next_sibling', None)
+
+    def measure(self, orientation, size):
+        return (self.natural, self.natural, self.natural, self.natural)
+
+
+# The fitting code recognizes widgets by class name (the real ones are C
+# types it cannot import), so the stubs carry the production names.
+NautilusNameCell = type('NautilusNameCell', (_Widget,), {'natural': 0})
+GtkColumnViewTitle = type('GtkColumnViewTitle', (_Widget,), {'natural': 0})
+
+
+class _ColumnView(_Widget):
+    def __init__(self, columns, children=()):
+        super().__init__(children)
+        self._columns = list(columns)
+
+    def get_columns(self):
+        return self._columns
+
+
+class _ListModel:
+    def __init__(self, items):
+        self._items = list(items)
+
+    def get_n_items(self):
+        return len(self._items)
+
+    def get_item(self, index):
+        return self._items[index]
+
+
+class _Toplevel(_Widget):
+    """Stand-in for a top-level window (named apart from the dialog stub)."""
+
+    toplevels = []
+
+    @classmethod
+    def get_toplevels(cls):
+        return _ListModel(cls.toplevels)
+
+
 class _Gtk:
     Orientation = types.SimpleNamespace(VERTICAL=1, HORIZONTAL=2)
     Align = types.SimpleNamespace(END=1)
+    ColumnView = _ColumnView
+    Window = _Toplevel
+    Orientation = types.SimpleNamespace(VERTICAL=1, HORIZONTAL=2)
 
 
 class _Gdk:
@@ -117,6 +225,8 @@ def _load_extension():
     repository.Nautilus = _Nautilus
     gi = types.ModuleType('gi')
     gi.repository = repository
+    # The real gi exposes this; the extension calls it to pin GI versions.
+    gi.require_version = lambda name, version: None
     sys.modules['gi'] = gi
     sys.modules['gi.repository'] = repository
 
@@ -309,6 +419,115 @@ class ColumnsTests(unittest.TestCase):
         self.assertEqual(len(columns), 1)
         self.assertEqual(columns[0].kwargs['attribute'], nautilus_meta.ATTR)
         self.assertEqual(columns[0].kwargs['label'], '描述')
+        self.assertEqual(columns[0].kwargs['name'], nautilus_meta.DESC_COLUMN)
+
+    def tearDown(self):
+        _Toplevel.toplevels = []
+        nautilus_meta._name_widths.clear()
+        nautilus_meta._user_widths.clear()
+
+    def _view(self, desc_visible=True, name_natural=240, title_natural=30):
+        name = _ColumnViewColumn('name')
+        name.set_expand(True)  # what nautilus itself sets up
+        desc = _ColumnViewColumn(nautilus_meta.DESC_COLUMN,
+                                 visible=desc_visible)
+        size = _ColumnViewColumn('size')
+        cells = [NautilusNameCell() for _ in range(3)]
+        for cell in cells:
+            cell.natural = name_natural
+        title = GtkColumnViewTitle()
+        title.natural = title_natural
+        body = _Widget(cells)
+        view = _ColumnView([name, desc, size], children=[title, body])
+        _Toplevel.toplevels = [_Toplevel([view])]
+        return name, desc, size
+
+    def test_desc_visible_sizes_name_to_its_content(self):
+        name, desc, size = self._view()
+        nautilus_meta._fit_columns()
+        self.assertFalse(name.get_expand())
+        self.assertTrue(desc.get_expand())
+        self.assertFalse(size.get_expand())
+        self.assertEqual(name.get_fixed_width(), 240)
+
+    def test_name_width_never_below_the_header(self):
+        name, _desc, _size = self._view(name_natural=10, title_natural=90)
+        nautilus_meta._fit_columns()
+        self.assertEqual(name.get_fixed_width(), 90)
+
+    def test_desc_hidden_restores_nautilus_layout(self):
+        name, desc, _size = self._view(desc_visible=False)
+        nautilus_meta._fit_columns()
+        self.assertTrue(name.get_expand())
+        self.assertFalse(desc.get_expand())
+        self.assertEqual(name.get_fixed_width(), -1)
+
+    def test_hiding_the_desc_column_later_restores_name_expand(self):
+        name, desc, _size = self._view()
+        nautilus_meta._fit_columns()
+        self.assertFalse(name.get_expand())
+        desc.set_visible(False)
+        nautilus_meta._fit_columns()
+        self.assertTrue(name.get_expand())
+        self.assertEqual(name.get_fixed_width(), -1)
+
+    def test_hand_dragged_width_is_kept(self):
+        name, _desc, _size = self._view()
+        nautilus_meta._fit_columns()
+        name.set_fixed_width(500)  # user drags the divider
+        nautilus_meta._fit_columns()
+        self.assertEqual(name.get_fixed_width(), 500)
+        # A later refresh keeps respecting it, even with longer names.
+        for cell in _Toplevel.toplevels[0]._children[0]._children[1]._children:
+            cell.natural = 700
+        nautilus_meta._fit_columns()
+        self.assertEqual(name.get_fixed_width(), 500)
+
+    def test_view_without_our_column_is_untouched(self):
+        name = _ColumnViewColumn('name')
+        name.set_expand(True)
+        size = _ColumnViewColumn('size')
+        _Toplevel.toplevels = [_Toplevel([_ColumnView([name, size])])]
+        nautilus_meta._fit_columns()
+        self.assertTrue(name.get_expand())
+        self.assertEqual(name.get_fixed_width(), -1)
+
+    def test_nested_view_is_found(self):
+        name = _ColumnViewColumn('name')
+        name.set_expand(True)
+        desc = _ColumnViewColumn(nautilus_meta.DESC_COLUMN)
+        title = GtkColumnViewTitle()
+        title.natural = 40
+        view = _ColumnView([name, desc], children=[title])
+        inner = _Widget([view])
+        _Toplevel.toplevels = [_Toplevel([_Widget([inner])])]
+        nautilus_meta._fit_columns()
+        self.assertFalse(name.get_expand())
+        self.assertTrue(desc.get_expand())
+        self.assertEqual(name.get_fixed_width(), 40)
+
+    def test_missing_columns_never_raises(self):
+        class Boom:
+            def get_columns(self):
+                raise RuntimeError('internals changed')
+
+        _Toplevel.toplevels = [_Toplevel([Boom()])]
+        nautilus_meta._fit_columns()  # must not raise
+
+    def test_schedule_fits_once_per_idle_pass(self):
+        _GLib.idle_queue.clear()
+        name, desc, _size = self._view()
+        nautilus_meta._fit_scheduled = False
+        nautilus_meta._schedule_fit()
+        nautilus_meta._schedule_fit()
+        nautilus_meta._schedule_fit()
+        self.assertEqual(len(_GLib.idle_queue), 1)
+        _GLib.run_idle()
+        self.assertFalse(name.get_expand())
+        self.assertTrue(desc.get_expand())
+        # A later refresh schedules again.
+        nautilus_meta._schedule_fit()
+        self.assertEqual(len(_GLib.idle_queue), 1)
 
 
 class FileDescYamlTests(unittest.TestCase):

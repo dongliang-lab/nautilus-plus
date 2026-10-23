@@ -28,9 +28,14 @@ import re
 import stat
 import tempfile
 import traceback
+import weakref
 
 import yaml
 
+import gi
+gi.require_version('Gdk', '4.0')
+gi.require_version('Gtk', '4.0')
+gi.require_version('Nautilus', '4.1')
 from gi.repository import Gdk, Gio, GLib, GObject, Gtk, Nautilus
 
 CONFIG_DIR = os.path.expanduser('~/.config/nautilus-meta')
@@ -50,6 +55,9 @@ XATTR_KEY = 'user.nautilus-plus.desc'
 # older build still carry it and are carried over on sight (see
 # _normalize_captions).
 LEGACY_ATTRS = ('name-zh',)
+# Name of the list-view column registered below. Also used to find the column
+# back inside nautilus's own GtkColumnView (see _fit_columns).
+DESC_COLUMN = 'FolderMeta::Desc'
 YAML_NAME = '.folder.yaml'
 YAML_MAX_SIZE = 1024 * 1024
 
@@ -831,6 +839,152 @@ def _refresh_folder(folder):
 
 # --- nautilus extension points -------------------------------------------
 
+# --- list-view column widths ----------------------------------------------
+# nautilus gives the name column expand=TRUE and every other column expand=FALSE
+# (src/nautilus-list-view.c), so the description column is pushed far to the
+# right and cannot be pulled in. Nautilus.Column has no width/expand property,
+# so this is fixed in-process on the GTK widgets:
+#
+#   desc column visible  -> name column gets the width its contents need (the
+#                           longest file name, measured from the name cells),
+#                           and the description column expands into the rest
+#   desc column hidden   -> nautilus's own layout is restored
+#
+# The name width is only written while the user has not dragged the column:
+# once its fixed width differs from the one we last applied, the user is in
+# charge and the column is left alone.
+
+# GtkColumnViewColumn -> fixed width we last set on it
+_name_widths = weakref.WeakKeyDictionary()
+# name columns the user has resized by hand; their width is then never touched
+_user_widths = weakref.WeakSet()
+_fit_scheduled = False
+
+
+def _column_views(widget):
+    """Every GtkColumnView below `widget`, depth first."""
+    found = []
+    child = widget.get_first_child()
+    while child is not None:
+        if isinstance(child, Gtk.ColumnView):
+            found.append(child)
+        found.extend(_column_views(child))
+        child = child.get_next_sibling()
+    return found
+
+
+def _walk_in_order(widget, visit):
+    """Depth-first walk that keeps sibling order (headers come out in order)."""
+    visit(widget)
+    child = widget.get_first_child()
+    while child is not None:
+        _walk_in_order(child, visit)
+        child = child.get_next_sibling()
+
+
+def _natural_name_width(view):
+    """Width the name column needs so no file name is ellipsized.
+
+    Name cells are laid out in the body rows; the header label is a lower
+    bound that still works while no row is realized yet.
+    """
+    widest = 0
+    titles = []
+
+    def visit(widget):
+        nonlocal widest
+        kind = type(widget).__name__
+        if kind == 'NautilusNameCell':
+            widest = max(widest, widget.measure(Gtk.Orientation.HORIZONTAL, -1)[1])
+        elif kind == 'GtkColumnViewTitle':
+            titles.append(widget)
+
+    _walk_in_order(view, visit)
+    if titles:
+        # Titles sit in column order; the first one belongs to the name column.
+        # The header must stay readable even when every file name is shorter.
+        widest = max(widest,
+                     titles[0].measure(Gtk.Orientation.HORIZONTAL, -1)[1])
+    return widest
+
+
+def _fit_one(view):
+    """Place the description column right after the name. Never raises."""
+    name_column = None
+    desc_column = None
+    for column in view.get_columns():
+        column_id = column.get_id()
+        if column_id == 'name':
+            name_column = column
+        elif column_id == DESC_COLUMN:
+            desc_column = column
+
+    if name_column is None or desc_column is None:
+        return
+
+    if not desc_column.get_visible():
+        # Hidden description: hand the width back to the name column, exactly
+        # as nautilus set it up, and forget any hand-made width.
+        _name_widths.pop(name_column, None)
+        _user_widths.discard(name_column)
+        if not name_column.get_expand():
+            name_column.set_fixed_width(-1)
+            name_column.set_expand(True)
+        return
+
+    if name_column not in _user_widths:
+        natural = _natural_name_width(view)
+        applied = _name_widths.get(name_column)
+        current = name_column.get_fixed_width()
+        if applied is not None and current != applied:
+            # The width changed behind our back: the user dragged it.
+            _user_widths.add(name_column)
+        elif natural > 0 and current != natural:
+            name_column.set_fixed_width(natural)
+            _name_widths[name_column] = natural
+
+    if not desc_column.get_expand():
+        desc_column.set_expand(True)
+    if name_column.get_expand():
+        name_column.set_expand(False)
+
+
+def _fit_columns():
+    """Re-balance column widths in every open window. Never raises."""
+    try:
+        toplevels = Gtk.Window.get_toplevels()
+        for index in range(toplevels.get_n_items()):
+            window = toplevels.get_item(index)
+            if window is None:
+                continue
+            for view in _column_views(window):
+                try:
+                    _fit_one(view)
+                except Exception:
+                    # One odd view must not stop the others.
+                    pass
+    except Exception:
+        # Nautilus internals changed, or a window went away mid-walk: the
+        # columns simply stay as nautilus made them.
+        pass
+
+
+def _schedule_fit():
+    """Coalesce column fixes: one idle pass per main-loop iteration."""
+    global _fit_scheduled
+    if _fit_scheduled:
+        return
+    _fit_scheduled = True
+
+    def run():
+        global _fit_scheduled
+        _fit_scheduled = False
+        _fit_columns()
+        return False
+
+    GLib.idle_add(run)
+
+
 def _active_window():
     application = Gio.Application.get_default()
     if application is not None:
@@ -854,6 +1008,9 @@ class FolderMetaInfoProvider(GObject.GObject, Nautilus.InfoProvider):
 
     def update_file_info(self, file):
         _apply(file)
+        # Cheap and idempotent: makes sure a freshly built list view gets the
+        # description column placed right after the name.
+        _schedule_fit()
 
 
 class FolderMetaMenu(GObject.GObject, Nautilus.MenuProvider):
@@ -1063,7 +1220,7 @@ class FolderMetaColumns(GObject.GObject, Nautilus.ColumnProvider):
 
     def get_columns(self):
         return [Nautilus.Column(
-            name='FolderMeta::Desc',
+            name=DESC_COLUMN,
             attribute=ATTR,
             label='描述',
             description='文件夹描述或文件注释(.folder.yaml)',

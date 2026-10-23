@@ -36,10 +36,20 @@ MenuProvider.get_background_items(右键空白处)
 | 菜单标签翻转 | 对当前文件夹重加一次扩展属性 → `nautilus_file_changed` → 视图调度菜单重建(约 0.5s) |
 | yaml 缓存 | `{path: (mtime, name)}`,上限 1024,解析失败缓存 None |
 
+## 列表视图「描述」列
+
+- `FolderMetaColumns(Nautilus.ColumnProvider)` 注册列 `FolderMeta::Desc`,属性 `desc`
+- **列宽**:nautilus 让名称列 `expand=TRUE`、其余列 `expand=FALSE`(`src/nautilus-list-view.c`),描述列因此被推到最右且拖不窄。`Nautilus.Column` 没有宽度/expand 属性,所以在进程内改 GTK 控件:
+  - 描述列可见时:名称列 `expand=FALSE` 并 `fixed-width` = 内容自然宽度(取名称单元格与列头中较宽者);描述列 `expand=TRUE` 吃掉剩余空间
+  - 描述列隐藏时:恢复 nautilus 原样(名称列 `expand=TRUE`、`fixed-width=-1`)
+  - 用户手动拖动过名称列后不再改写它的宽度(记住最后一次自己设的值,发现被改过就认作拖动)
+  - 触发点:`InfoProvider.update_file_info` 末尾 `GLib.idle_add` 合并调度,每次进目录/刷新都会校正一次
+  - 失败静默:找不到控件或上游结构变化时退化为原样,不报错
+
 ## 已知边界
 
 - 图标最小缩放档只显示名字一行,captions 隐藏(nautilus 自身行为)
-- 列表视图通过 ColumnProvider 单独提供「描述」列(见下)
+- 列表视图通过 ColumnProvider 单独提供「描述」列(见下);列宽由插件在进程内调整,描述紧贴名称列
 - 非 `file:` URI(网络挂载)跳过
 
 ## 右键修改描述

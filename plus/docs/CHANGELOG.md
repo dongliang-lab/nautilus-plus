@@ -1,5 +1,14 @@
 # 版本日志
 
+## 0.4.1 — 2026-10-24
+
+**列表视图「描述」列紧贴名称列**
+
+- 问题:nautilus 只让名称列 `expand=TRUE`,描述列被推到最右且拖不窄;`Nautilus.Column` 没有宽度属性
+- 处理:插件在进程内找到 `Gtk.ColumnView`,描述列可见时把名称列改成内容自然宽度(`expand=FALSE` + `fixed-width`),描述列 `expand=TRUE`;描述列隐藏或用户手动拖动后不再改写
+- 顺带:去掉 `Gdk` 的 PyGIWarning(显式 `require_version`)
+- 单测 51 → 60
+
 ## 0.4.0 — 2026-10-23
 
 **删除归档与 history-paths,C 层全部还原为上游原样(纯插件)**
